@@ -8,15 +8,18 @@ import (
 	"time"
 )
 
+type OutputFormat string
+
 const (
-	FormatText   = "text"
-	FormatJSON   = "json"
-	FormatCustom = "custom"
+	FormatText   OutputFormat = "text"
+	FormatJSON   OutputFormat = "json"
+	FormatCustom OutputFormat = "custom"
 
 	DefaultTimeFormat    = "2006/01/02 15:04:05"
 	DefaultMaxSizeMB     = 10
 	DefaultRetentionDays = 7
 	DefaultFormatter     = "{time} {level} {message} {file} {attrs}"
+	DefaultFormat        = FormatText
 )
 
 type Config struct {
@@ -25,37 +28,55 @@ type Config struct {
 	AddSource  bool
 	TimeFormat string
 	TimeZone   *time.Location
-	Format     string // "json", "text", 或 "custom"
 
-	// Console configuration
-	Console   bool
-	Color     bool
-	Formatter string
-
-	// File configuration
-	File          bool
-	FilePath      string
-	MaxSizeMB     int
-	RetentionDays int
+	// Configurations for different log destinations
+	Console ConsoleConfig
+	File    FileConfig
 
 	// ReplaceAttr is a function that can be used to replace attributes in log messages
 	ReplaceAttr func(groups []string, a slog.Attr) slog.Attr
 }
 
+type ConsoleConfig struct {
+	Enabled   bool         // Enable console logging
+	Color     bool         // Enable colorized output
+	Format    OutputFormat // text, json, custom
+	Formatter string       // Custom formatter string, only used if Format is FormatCustom
+}
+
+type FileConfig struct {
+	Enabled       bool
+	Format        OutputFormat
+	Formatter     string // Custom formatter string, only used if Format is FormatCustom
+	Path          string // Path to the log file
+	MaxSizeMB     int    // Maximum size of the log file in megabytes
+	RetentionDays int    // Number of days to retain log files
+}
+
 func DefaultConfig() *Config {
 	return &Config{
-		Level:         slog.LevelInfo,
-		AddSource:     false,
-		TimeFormat:    DefaultTimeFormat,
-		TimeZone:      time.Local,
-		Format:        FormatCustom,
-		Console:       true,
-		Color:         true,
-		Formatter:     DefaultFormatter,
-		File:          false,
-		MaxSizeMB:     DefaultMaxSizeMB,
-		RetentionDays: DefaultRetentionDays,
-		ReplaceAttr:   nil,
+		Level:      slog.LevelInfo,
+		AddSource:  false,
+		TimeFormat: DefaultTimeFormat,
+		TimeZone:   time.Local,
+
+		Console: ConsoleConfig{
+			Enabled:   true,
+			Color:     true,
+			Format:    FormatCustom,
+			Formatter: DefaultFormatter,
+		},
+
+		File: FileConfig{
+			Enabled:       false,
+			Format:        FormatCustom,
+			Formatter:     DefaultFormatter,
+			Path:          "",
+			MaxSizeMB:     DefaultMaxSizeMB,
+			RetentionDays: DefaultRetentionDays,
+		},
+
+		ReplaceAttr: nil,
 	}
 }
 
@@ -86,25 +107,32 @@ func WithTimeZone(timeZone *time.Location) Option {
 	}
 }
 
-func WithFormat(format string) Option {
+// WithReplaceAttr sets a function that can be used to replace attributes in log messages
+func WithReplaceAttr(replaceAttr func(groups []string, a slog.Attr) slog.Attr) Option {
 	return func(c *Config) {
-		c.Format = format
+		c.ReplaceAttr = replaceAttr
 	}
 }
 
-func WithConsole(console bool) Option {
+func WithConsole(enabled bool) Option {
 	return func(c *Config) {
-		c.Console = console
+		c.Console.Enabled = enabled
 	}
 }
 
-func WithColor(enabled bool) Option {
+func WithConsoleFormat(format OutputFormat) Option {
 	return func(c *Config) {
-		c.Color = enabled
+		c.Console.Format = format
 	}
 }
 
-// WithFormatter sets the formatter for logging, and automatically sets the format to FormatCustom
+func WithConsoleColor(enabled bool) Option {
+	return func(c *Config) {
+		c.Console.Color = enabled
+	}
+}
+
+// WithConsoleFormatter sets the console formatter for logging, and automatically sets the format to FormatCustom
 // The formatter string can contain the following placeholders:
 // - {time}: The timestamp of the log message
 // - {level}: The log level of the message
@@ -112,43 +140,69 @@ func WithColor(enabled bool) Option {
 // - {file}: The source file where the log message was generated
 // - {attrs}: Any additional attributes associated with the log message
 // For example: "{time} [{level}] {file} {message} {attrs}"
-func WithFormatter(formatter string) Option {
+func WithConsoleFormatter(formatter string) Option {
 	return func(c *Config) {
-		c.Formatter = formatter
+		c.Console.Format = FormatCustom
+		c.Console.Formatter = formatter
 	}
 }
 
 func WithFile(enabled bool) Option {
 	return func(c *Config) {
-		c.File = enabled
+		c.File.Enabled = enabled
 	}
 }
 
 func WithFilePath(path string) Option {
 	return func(c *Config) {
-		c.FilePath = path
-		c.File = true
+		c.File.Path = path
+		c.File.Enabled = true
+	}
+}
+
+func WithFileFormat(format OutputFormat) Option {
+	return func(c *Config) {
+		c.File.Format = format
+	}
+}
+
+func WithFileFormatter(formatter string) Option {
+	return func(c *Config) {
+		c.File.Format = FormatCustom
+		c.File.Formatter = formatter
 	}
 }
 
 // WithMaxSizeMB sets the maximum size of the log file in megabytes
 func WithMaxSizeMB(maxSizeMB int) Option {
 	return func(c *Config) {
-		c.MaxSizeMB = maxSizeMB
+		c.File.MaxSizeMB = maxSizeMB
 	}
 }
 
 // WithRetentionDays sets the number of days to retain log files
 func WithRetentionDays(retentionDays int) Option {
 	return func(c *Config) {
-		c.RetentionDays = retentionDays
+		c.File.RetentionDays = retentionDays
 	}
 }
 
-// WithReplaceAttr sets a function that can be used to replace attributes in log messages
-func WithReplaceAttr(replaceAttr func(groups []string, a slog.Attr) slog.Attr) Option {
+// WithFormat sets the format of the log message for both console and file logging
+func WithFormat(format OutputFormat) Option {
 	return func(c *Config) {
-		c.ReplaceAttr = replaceAttr
+		c.Console.Format = format
+		c.File.Format = format
+	}
+}
+
+// WithFormatter sets the formatter for both console and file logging,
+// and automatically sets the format to FormatCustom
+func WithFormatter(formatter string) Option {
+	return func(c *Config) {
+		c.Console.Format = FormatCustom
+		c.Console.Formatter = formatter
+		c.File.Format = FormatCustom
+		c.File.Formatter = formatter
 	}
 }
 
@@ -168,20 +222,30 @@ func validateConfig(cfg *Config) error {
 		cfg.TimeZone = time.Local
 	}
 
+	// Set default format if not provided
+	if cfg.Console.Format == "" {
+		cfg.Console.Format = DefaultFormat
+	}
+	if cfg.File.Format == "" {
+		cfg.File.Format = DefaultFormat
+	}
+
 	// Validate format
-	validFormats := map[string]bool{FormatText: true, FormatJSON: true, FormatCustom: true}
-	if _, ok := validFormats[cfg.Format]; !ok {
-		return fmt.Errorf("unsupported format: %s (must be one of: text, json, custom)", cfg.Format)
+	if !isValidFormat(cfg.Console.Format) {
+		return fmt.Errorf("unsupported console format: %s (must be one of: text, json, custom)", cfg.Console.Format)
+	}
+	if !isValidFormat(cfg.File.Format) {
+		return fmt.Errorf("unsupported file format: %s (must be one of: text, json, custom)", cfg.File.Format)
 	}
 
 	// Validate file configuration
-	if cfg.File {
-		if cfg.FilePath == "" {
-			return fmt.Errorf("file logging enabled but FilePath is empty")
+	if cfg.File.Enabled {
+		if cfg.File.Path == "" {
+			return fmt.Errorf("file logging enabled but Path is empty")
 		}
 
 		// Create the log directory if it doesn't exist
-		dir := filepath.Dir(cfg.FilePath)
+		dir := filepath.Dir(cfg.File.Path)
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
 			if err := os.MkdirAll(dir, 0755); err != nil {
 				return fmt.Errorf("unable to create log directory %s: %w", dir, err)
@@ -190,19 +254,31 @@ func validateConfig(cfg *Config) error {
 			return fmt.Errorf("error checking log directory %s: %w", dir, err)
 		}
 
-		if cfg.MaxSizeMB <= 0 {
-			cfg.MaxSizeMB = DefaultMaxSizeMB
+		if cfg.File.MaxSizeMB <= 0 {
+			cfg.File.MaxSizeMB = DefaultMaxSizeMB
 		}
 
-		if cfg.RetentionDays <= 0 {
-			cfg.RetentionDays = DefaultRetentionDays
+		if cfg.File.RetentionDays <= 0 {
+			cfg.File.RetentionDays = DefaultRetentionDays
 		}
 	}
 
 	// Make sure at least one logging destination is enabled
-	if !cfg.Console && !cfg.File {
+	if !cfg.Console.Enabled && !cfg.File.Enabled {
 		return fmt.Errorf("neither console nor file logging is enabled")
 	}
 
+	// Set default formatter if custom format is selected but no formatter is provided
+	if cfg.Console.Format == FormatCustom && cfg.Console.Formatter == "" {
+		cfg.Console.Formatter = DefaultFormatter
+	}
+	if cfg.File.Format == FormatCustom && cfg.File.Formatter == "" {
+		cfg.File.Formatter = DefaultFormatter
+	}
+
 	return nil
+}
+
+func isValidFormat(format OutputFormat) bool {
+	return format == FormatText || format == FormatJSON || format == FormatCustom
 }

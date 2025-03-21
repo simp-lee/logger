@@ -36,7 +36,8 @@ const (
 type customHandler struct {
 	mu         sync.Mutex
 	out        io.Writer
-	cfg        *Config
+	globalCfg  *Config
+	outputCfg  outputConfig
 	attrsIndex int
 	pool       *sync.Pool
 	groups     []string
@@ -44,13 +45,53 @@ type customHandler struct {
 	opts       slog.HandlerOptions
 }
 
-func newCustomHandler(w io.Writer, cfg *Config, opts *slog.HandlerOptions) (slog.Handler, error) {
+// outputConfig interface for unified access to Console and File configurations
+type outputConfig interface {
+	GetFormat() OutputFormat
+	GetColor() bool
+	GetFormatter() string
+}
+
+// ConsoleConfig implements outputConfig interface
+func (c *ConsoleConfig) GetFormat() OutputFormat {
+	return c.Format
+}
+
+func (c *ConsoleConfig) GetColor() bool {
+	return c.Color
+}
+
+func (c *ConsoleConfig) GetFormatter() string {
+	return c.Formatter
+}
+
+// FileConfig implements outputConfig interface
+func (c *FileConfig) GetFormat() OutputFormat {
+	return c.Format
+}
+
+func (c *FileConfig) GetColor() bool {
+	// File output does not support color
+	return false
+}
+
+func (c *FileConfig) GetFormatter() string {
+	return c.Formatter
+}
+
+func newCustomHandler(w io.Writer, globalCfg *Config, outputCfg outputConfig, opts *slog.HandlerOptions) (slog.Handler, error) {
+	formatter := outputCfg.GetFormatter()
+	if formatter == "" {
+		formatter = DefaultFormatter
+	}
+
 	h := &customHandler{
 		out:        w,
-		cfg:        cfg,
-		attrsIndex: strings.Index(cfg.Formatter, PlaceholderAttrs),
+		globalCfg:  globalCfg,
+		outputCfg:  outputCfg,
+		attrsIndex: strings.Index(formatter, PlaceholderAttrs),
 		pool: &sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				return new(strings.Builder)
 			},
 		},
@@ -61,9 +102,9 @@ func newCustomHandler(w io.Writer, cfg *Config, opts *slog.HandlerOptions) (slog
 		h.opts = *opts
 	} else {
 		h.opts = slog.HandlerOptions{
-			Level:       cfg.Level,
-			AddSource:   cfg.AddSource,
-			ReplaceAttr: cfg.ReplaceAttr,
+			Level:       globalCfg.Level,
+			AddSource:   globalCfg.AddSource,
+			ReplaceAttr: globalCfg.ReplaceAttr,
 		}
 	}
 
@@ -123,7 +164,8 @@ func (h *customHandler) WithGroup(name string) slog.Handler {
 func (h *customHandler) clone() *customHandler {
 	return &customHandler{
 		out:        h.out,
-		cfg:        h.cfg,
+		globalCfg:  h.globalCfg,
+		outputCfg:  h.outputCfg,
 		attrsIndex: h.attrsIndex,
 		pool:       h.pool,
 		groups:     slices.Clone(h.groups),
@@ -133,7 +175,7 @@ func (h *customHandler) clone() *customHandler {
 }
 
 func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
-	timeStr := h.colorize(r.Time.In(h.cfg.TimeZone).Format(h.cfg.TimeFormat), ansiFaint)
+	timeStr := h.colorize(r.Time.In(h.globalCfg.TimeZone).Format(h.globalCfg.TimeFormat), ansiFaint)
 	levelStr := h.colorizeLevel(r.Level)
 
 	// Handle group prefix
@@ -181,7 +223,7 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 		PlaceholderMessage, msg,
 		PlaceholderFile, fileStr,
 		PlaceholderAttrs, attrsStr,
-	).Replace(h.cfg.Formatter)
+	).Replace(h.outputCfg.GetFormatter())
 
 	// Remove extra spaces and add newline
 	builder.WriteString(strings.Join(strings.Fields(logLine), " "))
@@ -189,7 +231,7 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 }
 
 func (h *customHandler) colorize(s, color string) string {
-	if !h.cfg.Color {
+	if !h.outputCfg.GetColor() {
 		return s
 	}
 	return color + s + ansiReset

@@ -9,21 +9,42 @@ import (
 	"time"
 )
 
+// mockOutputConfig implements outputConfig interface for testing
+type mockOutputConfig struct {
+	format    OutputFormat
+	color     bool
+	formatter string
+}
+
+func (m *mockOutputConfig) GetFormat() OutputFormat {
+	return m.format
+}
+
+func (m *mockOutputConfig) GetColor() bool {
+	return m.color
+}
+
+func (m *mockOutputConfig) GetFormatter() string {
+	return m.formatter
+}
+
 func TestCustomHandler(t *testing.T) {
 	t.Run("BasicFormatting", func(t *testing.T) {
 		var buf bytes.Buffer
 
 		cfg := DefaultConfig()
-		cfg.Format = FormatCustom
-		cfg.Formatter = "{level} {message} {attrs}"
-		cfg.Color = false // Disable color for easier testing
+		outputCfg := &mockOutputConfig{
+			format:    FormatCustom,
+			color:     false, // Disable color for easier testing
+			formatter: "{level} {message} {attrs}",
+		}
 
 		opts := &slog.HandlerOptions{
 			Level:     slog.LevelInfo,
 			AddSource: false,
 		}
 
-		handler, err := newCustomHandler(&buf, cfg, opts)
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
 		if err != nil {
 			t.Fatalf("Failed to create handler: %v", err)
 		}
@@ -56,11 +77,13 @@ func TestCustomHandler(t *testing.T) {
 		var buf bytes.Buffer
 
 		cfg := DefaultConfig()
-		cfg.Format = FormatCustom
-		cfg.Formatter = "{message} {attrs}"
-		cfg.Color = false
+		outputCfg := &mockOutputConfig{
+			format:    FormatCustom,
+			color:     false,
+			formatter: "{message} {attrs}",
+		}
 
-		handler, err := newCustomHandler(&buf, cfg, nil)
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, nil)
 		if err != nil {
 			t.Fatalf("Failed to create handler: %v", err)
 		}
@@ -93,11 +116,13 @@ func TestCustomHandler(t *testing.T) {
 		var buf bytes.Buffer
 
 		cfg := DefaultConfig()
-		cfg.Format = FormatCustom
-		cfg.Formatter = "{message} {attrs}"
-		cfg.Color = false
+		outputCfg := &mockOutputConfig{
+			format:    FormatCustom,
+			color:     false,
+			formatter: "{message} {attrs}",
+		}
 
-		handler, err := newCustomHandler(&buf, cfg, nil)
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, nil)
 		if err != nil {
 			t.Fatalf("Failed to create handler: %v", err)
 		}
@@ -126,11 +151,13 @@ func TestCustomHandler(t *testing.T) {
 		var buf bytes.Buffer
 
 		cfg := DefaultConfig()
-		cfg.Format = FormatCustom
-		cfg.Formatter = "{level} {message}"
-		cfg.Color = true
+		outputCfg := &mockOutputConfig{
+			format:    FormatCustom,
+			color:     true, // Enable color for testing
+			formatter: "{level} {message}",
+		}
 
-		handler, err := newCustomHandler(&buf, cfg, nil)
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, nil)
 		if err != nil {
 			t.Fatalf("Failed to create handler: %v", err)
 		}
@@ -150,6 +177,38 @@ func TestCustomHandler(t *testing.T) {
 		// Check if ANSI color codes are present
 		if !strings.Contains(output, "\033[") {
 			t.Errorf("Color formatting not applied: %q", output)
+		}
+	})
+
+	t.Run("FileOutputNoColor", func(t *testing.T) {
+		var buf bytes.Buffer
+
+		cfg := DefaultConfig()
+		// Use real FileConfig for testing
+		outputCfg := &cfg.File
+		outputCfg.Format = FormatCustom
+		outputCfg.Formatter = "{level} {message}"
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, nil)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		record := slog.Record{
+			Time:    time.Now(),
+			Level:   slog.LevelError,
+			Message: "error message",
+		}
+
+		err = handler.Handle(context.Background(), record)
+		if err != nil {
+			t.Fatalf("Handler.Handle failed: %v", err)
+		}
+
+		output := buf.String()
+		// Check if ANSI color codes are not present
+		if strings.Contains(output, "\033[") {
+			t.Errorf("File output should not have color codes: %q", output)
 		}
 	})
 }

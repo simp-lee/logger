@@ -21,7 +21,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("ConsoleHandler", func(t *testing.T) {
 		handler, err := NewHandler(
 			WithLevel(slog.LevelDebug),
-			WithFormat(FormatText),
+			WithConsoleFormat(FormatText),
 		)
 		if err != nil {
 			t.Fatalf("Failed to create console handler: %v", err)
@@ -34,7 +34,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("JSONConsoleHandler", func(t *testing.T) {
 		handler, err := NewHandler(
 			WithLevel(slog.LevelInfo),
-			WithFormat(FormatJSON),
+			WithConsoleFormat(FormatJSON),
 		)
 		if err != nil {
 			t.Fatalf("Failed to create JSON console handler: %v", err)
@@ -47,8 +47,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("CustomConsoleHandler", func(t *testing.T) {
 		handler, err := NewHandler(
 			WithLevel(slog.LevelInfo),
-			WithFormat(FormatCustom),
-			WithFormatter("{time} [{level}] {message}"),
+			WithConsoleFormatter("{time} [{level}] {message}"),
 		)
 		if err != nil {
 			t.Fatalf("Failed to create custom console handler: %v", err)
@@ -59,13 +58,13 @@ func TestNewHandler(t *testing.T) {
 	})
 
 	t.Run("FileHandler", func(t *testing.T) {
-		// 创建临时目录
+		// Create a temporary directory
 		tmpDir := t.TempDir()
 
-		// 调试信息，帮助排查路径问题
+		// Debug information to help with path issues
 		t.Logf("Temporary directory: %s", tmpDir)
 
-		// 手动创建 "001" 目录
+		// Manually create the "001" directory
 		logDir := filepath.Join(tmpDir, "001")
 		err := os.MkdirAll(logDir, 0755)
 		if err != nil {
@@ -77,8 +76,7 @@ func TestNewHandler(t *testing.T) {
 
 		handler, err := NewHandler(
 			WithLevel(slog.LevelInfo),
-			WithFormat(FormatText),
-			WithFile(true),
+			WithFileFormat(FormatText),
 			WithFilePath(logPath),
 			WithConsole(false),
 			WithMaxSizeMB(10),
@@ -91,11 +89,11 @@ func TestNewHandler(t *testing.T) {
 			t.Fatal("Expected non-nil handler")
 		}
 
-		// 打印一条日志以确保文件被创建
+		// Print one log message to ensure the file is created
 		logger := New(handler)
 		logger.Info("Test log message")
 
-		// 检查文件是否被创建
+		// Check if the file was created
 		if _, err := os.Stat(logPath); os.IsNotExist(err) {
 			t.Fatalf("Log file was not created: %v", err)
 		} else if err != nil {
@@ -104,13 +102,13 @@ func TestNewHandler(t *testing.T) {
 	})
 
 	t.Run("MultiHandler", func(t *testing.T) {
-		// 创建临时目录
+		// Create a temporary directory
 		tmpDir := t.TempDir()
 
-		// 调试信息，帮助排查路径问题
+		// Debug information to help with path issues
 		t.Logf("Temporary directory: %s", tmpDir)
 
-		// 手动创建 "001" 目录
+		// Manually create the "001" directory
 		logDir := filepath.Join(tmpDir, "001")
 		err := os.MkdirAll(logDir, 0755)
 		if err != nil {
@@ -122,8 +120,8 @@ func TestNewHandler(t *testing.T) {
 
 		handler, err := NewHandler(
 			WithLevel(slog.LevelInfo),
-			WithFormat(FormatJSON),
-			WithFile(true),
+			WithConsoleFormat(FormatJSON),
+			WithFileFormat(FormatJSON),
 			WithFilePath(logPath),
 			WithConsole(true),
 			WithMaxSizeMB(10),
@@ -136,11 +134,11 @@ func TestNewHandler(t *testing.T) {
 			t.Fatal("Expected non-nil handler")
 		}
 
-		// 打印一条日志以确保文件被创建
+		// Print one log message to ensure the file is created
 		logger := New(handler)
 		logger.Info("Test log message")
 
-		// 检查文件是否被创建
+		// Check if the file was created
 		if _, err := os.Stat(logPath); os.IsNotExist(err) {
 			t.Fatalf("Log file was not created: %v", err)
 		} else if err != nil {
@@ -148,12 +146,25 @@ func TestNewHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("InvalidFormat", func(t *testing.T) {
-		_, err := NewHandler(
-			WithFormat("invalid"),
-		)
+	t.Run("InvalidConsoleFormat", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Console.Format = "invalid"
+
+		_, err := newConsoleHandler(cfg)
 		if err == nil {
-			t.Fatal("Expected error for invalid format")
+			t.Fatal("Expected error for invalid console format")
+		}
+	})
+
+	t.Run("InvalidFileFormat", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.File.Format = "invalid"
+		cfg.File.Enabled = true
+		cfg.File.Path = "test.log"
+
+		_, err := newFileHandler(cfg)
+		if err == nil {
+			t.Fatal("Expected error for invalid file format")
 		}
 	})
 }
@@ -168,19 +179,16 @@ func (m *mockWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func TestConsoleHandler(t *testing.T) {
+func TestHandlerWithCustomWriter(t *testing.T) {
 	writer := &mockWriter{}
 
-	opts := &slog.HandlerOptions{
+	cfg := DefaultConfig()
+
+	// Test console handler with custom writer
+	handler, err := newCustomHandler(writer, cfg, &cfg.Console, &slog.HandlerOptions{
 		Level:     slog.LevelInfo,
 		AddSource: true,
-	}
-
-	// Test JSON handler
-	cfg := DefaultConfig()
-	cfg.Format = FormatJSON
-
-	handler, err := newCustomHandler(writer, cfg, opts)
+	})
 	if err != nil {
 		t.Fatalf("Failed to create handler: %v", err)
 	}

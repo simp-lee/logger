@@ -109,12 +109,36 @@ func (w *rotatingWriter) rotate() error {
 	defer w.mutex.Unlock()
 
 	oldPath := filepath.Join(w.config.directory, w.config.fileName)
-	ext := filepath.Ext(w.config.fileName)
 
+	// Check if the file exists before rotating
+	if _, err := os.Stat(oldPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("failed to check log file: %w", err)
+	}
+
+	ext := filepath.Ext(w.config.fileName)
+	timestamp := time.Now().Format("20060102.150405.000")
+
+	// Generate a unique filename for the rotated log
 	newPath := filepath.Join(w.config.directory, fmt.Sprintf("%s.%s%s",
 		strings.TrimSuffix(w.config.fileName, ext),
-		time.Now().Format("20060102.150405.000"),
+		timestamp,
 		ext))
+
+	// Ensure the new path is unique by adding a counter if needed
+	counter := 0
+	for {
+		if _, err := os.Stat(newPath); os.IsNotExist(err) {
+			break
+		}
+		counter++
+		newPath = filepath.Join(w.config.directory, fmt.Sprintf("%s.%s.%d%s",
+			strings.TrimSuffix(w.config.fileName, ext),
+			timestamp,
+			counter,
+			ext))
+	}
 
 	// Rename the current log file
 	if err := os.Rename(oldPath, newPath); err != nil {

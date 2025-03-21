@@ -24,7 +24,7 @@ func NewHandler(opts ...Option) (slog.Handler, error) {
 	var handlers []slog.Handler
 
 	// Create console handler
-	if cfg.Console {
+	if cfg.Console.Enabled {
 		console, err := newConsoleHandler(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("error creating console handler: %w", err)
@@ -33,7 +33,7 @@ func NewHandler(opts ...Option) (slog.Handler, error) {
 	}
 
 	// Create file handler
-	if cfg.File && cfg.FilePath != "" {
+	if cfg.File.Enabled && cfg.File.Path != "" {
 		file, err := newFileHandler(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("error creating file handler: %w", err)
@@ -65,24 +65,24 @@ func newConsoleHandler(cfg *Config) (slog.Handler, error) {
 		ReplaceAttr: cfg.ReplaceAttr,
 	}
 
-	switch cfg.Format {
+	switch cfg.Console.Format {
 	case FormatJSON:
 		return slog.NewJSONHandler(os.Stderr, opts), nil
 	case FormatText:
 		return slog.NewTextHandler(os.Stderr, opts), nil
 	case FormatCustom:
-		return newCustomHandler(os.Stderr, cfg, opts)
+		return newCustomHandler(os.Stderr, cfg, &cfg.Console, opts)
 	default:
-		return nil, fmt.Errorf("unsupported log format: %v", cfg.Format)
+		return nil, fmt.Errorf("unsupported log format: %v", cfg.Console.Format)
 	}
 }
 
 func newFileHandler(cfg *Config) (slog.Handler, error) {
 	writer, err := newRotatingWriter(&rotatingConfig{
-		directory:     filepath.Dir(cfg.FilePath),
-		fileName:      filepath.Base(cfg.FilePath),
-		maxSizeMB:     cfg.MaxSizeMB,
-		retentionDays: cfg.RetentionDays,
+		directory:     filepath.Dir(cfg.File.Path),
+		fileName:      filepath.Base(cfg.File.Path),
+		maxSizeMB:     cfg.File.MaxSizeMB,
+		retentionDays: cfg.File.RetentionDays,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("error creating rotating writer: %w", err)
@@ -94,14 +94,14 @@ func newFileHandler(cfg *Config) (slog.Handler, error) {
 		ReplaceAttr: cfg.ReplaceAttr,
 	}
 
-	switch cfg.Format {
+	switch cfg.File.Format {
 	case FormatJSON:
 		return slog.NewJSONHandler(writer, opts), nil
 	case FormatText:
 		return slog.NewTextHandler(writer, opts), nil
 	case FormatCustom:
-		return newCustomHandler(writer, cfg, opts)
+		return newCustomHandler(writer, cfg, &cfg.File, opts)
 	default:
-		return nil, fmt.Errorf("unsupported log format: %v", cfg.Format)
+		return nil, fmt.Errorf("unsupported log format: %v", cfg.File.Format)
 	}
 }

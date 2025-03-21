@@ -104,8 +104,8 @@ func TestCustomHandlerIntegration(t *testing.T) {
 	// Create a logger with custom handler
 	handler, err := NewHandler(
 		WithLevel(slog.LevelDebug),
-		WithFormat(FormatCustom),
-		WithFormatter("{time} [{level}] {message} {attrs}"),
+		WithFileFormat(FormatCustom),
+		WithFileFormatter("{time} [{level}] {message} {attrs}"),
 		WithFilePath(logPath),
 		WithConsole(false),
 	)

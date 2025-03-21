@@ -6,9 +6,10 @@ A flexible, lightweight logger for Go built on the standard `log/slog` package, 
 
 - Multiple output destinations (console, file)
 - TEXT, JSON, and custom format support
-- Colored console output
+- Colored console output (automatically disabled in file output)
 - Automatic log file rotation and retention
 - Structured logging with context support
+- Independent configuration for console and file outputs
 
 ## Installation
 
@@ -39,14 +40,21 @@ func main() {
 
 ```go
 handler, err := logger.NewHandler(
+    // Global options
     logger.WithLevel(slog.LevelDebug),
     logger.WithAddSource(true),
     logger.WithTimeFormat("2006-01-02 15:04:05.000"),
+    
+    // Console-specific options
     logger.WithConsole(true),
-    logger.WithColor(true),
-    logger.WithFormatter("{time} [{level}] {message} {file} {attrs}"),
+    logger.WithConsoleColor(true),
+    logger.WithConsoleFormat(logger.FormatCustom),
+    logger.WithConsoleFormatter("{time} [{level}] {message} {file} {attrs}"),
+    
+    // File-specific options
     logger.WithFile(true),
     logger.WithFilePath("/var/log/myapp.log"),
+    logger.WithFileFormat(logger.FormatJSON),  // File uses JSON format
     logger.WithMaxSizeMB(100),
     logger.WithRetentionDays(30),
 )
@@ -54,7 +62,7 @@ handler, err := logger.NewHandler(
 
 ## Configuration Options
 
-### General Options
+### Global Options
 
 | Option | Description | Default |
 | ------ | ----------- | ------- |
@@ -62,7 +70,6 @@ handler, err := logger.NewHandler(
 | `WithAddSource` | Include source file information | `false` |
 | `WithTimeFormat` | Format for timestamp | `"2006/01/02 15:04:05"` |
 | `WithTimeZone` | Timezone for log timestamps | `time.Local` |
-| `WithFormat` | Log format (`"text"`, `"json"`, or `"custom"`) | `"custom"` |
 | `WithReplaceAttr` | Custom attribute transformation function | `nil` |
 
 ### Console Options
@@ -70,8 +77,9 @@ handler, err := logger.NewHandler(
 | Option | Description | Default |
 | ------ | ----------- | ------- |
 | `WithConsole` | Enable console logging | `true` |
-| `WithColor` | Enable colored output in console | `true` |
-| `WithFormatter` | Custom log format template | `"{time} {level} {message} {file} {attrs}"` |
+| `WithConsoleColor` | Enable colored output in console | `true` |
+| `WithConsoleFormat` | Console log format (`FormatText`, `FormatJSON`, or `FormatCustom`) | `FormatCustom` |
+| `WithConsoleFormatter` | Custom format template for console | `"{time} {level} {message} {file} {attrs}"` |
 
 ### File Options
 
@@ -79,13 +87,24 @@ handler, err := logger.NewHandler(
 | ------ | ----------- | ------- |
 | `WithFile` | Enable file logging | `false` |
 | `WithFilePath` | Path to the log file | `""` |
+| `WithFileFormat` | File log format (`FormatText`, `FormatJSON`, or `FormatCustom`) | `FormatCustom` |
+| `WithFileFormatter` | Custom format template for file | `"{time} {level} {message} {file} {attrs}"` |
 | `WithMaxSizeMB` | Maximum size of log file before rotation | `10` |
 | `WithRetentionDays` | Days to retain rotated log files | `7` |
+
+### Compatibility Options
+
+These options set both console and file configurations at once:
+
+| Option | Description | Affects |
+| ------ | ----------- | ------- |
+| `WithFormat` | Set log format for both console and file | Console & File |
+| `WithFormatter` | Set formatter for both console and file | Console & File |
 
 ## Custom Formatting
 
 ```go
-logger.WithFormatter("{time} | {level} | {message} | {attrs}")
+logger.WithConsoleFormatter("{time} | {level} | {message} | {attrs}")
 ```
 
 **Placeholders**:
@@ -105,6 +124,26 @@ When color output is enabled, the logger applies the following color scheme:
 
 Error messages and error attributes are highlighted in red to make them easily identifiable. Source file information is displayed in faint text for better readability.
 
+**Note**: Color codes are only applied to console output. File logging automatically disables color codes to ensure log files remain clean and readable.
+
+## Different Formats for Console and File
+
+You can configure different output formats for console and file logging:
+
+```go
+handler, err := logger.NewHandler(
+    // Console uses a custom format with color
+    logger.WithConsoleFormat(logger.FormatCustom),
+    logger.WithConsoleFormatter("{time} | {level} | {message}"),
+    logger.WithConsoleColor(true),
+    
+    // File uses JSON format
+    logger.WithFile(true),
+    logger.WithFilePath("./logs/myapp.log"),
+    logger.WithFileFormat(logger.FormatJSON),
+)
+```
+
 ## Log Rotation
 
 File logs are automatically rotated when they reach the configured maximum size:
@@ -112,7 +151,7 @@ File logs are automatically rotated when they reach the configured maximum size:
 ```go
 handler, err := logger.NewHandler(
     logger.WithFile(true),
-    logger.WithFilePath("/var/log/myapp.log"),
+    logger.WithFilePath("./logs/myapp.log"),
     logger.WithMaxSizeMB(10),       // Rotate at 10MB
     logger.WithRetentionDays(7),    // Keep logs for 7 days
 )
@@ -128,7 +167,7 @@ The logger can write to both console and file simultaneously:
 handler, err := logger.NewHandler(
     logger.WithConsole(true),
     logger.WithFile(true),
-    logger.WithFilePath("/var/log/myapp.log"),
+    logger.WithFilePath("./logs/myapp.log"),
 )
 ```
 
@@ -142,6 +181,15 @@ log.SetDefault()
 
 // Now standard library calls use your configured logger
 slog.Info("This uses your custom logger")
+slog.Debug("Debug message via standard library")
+slog.Error("Error message via standard library", "error", "some error")
+
+// Standard library grouping and attributes also work
+authLogger := slog.With("component", "auth")
+authLogger.Info("Login attempt", "success", true)
+
+dbLogger := slog.Default().WithGroup("database")
+dbLogger.Info("Connection established", "host", "localhost")
 ```
 
 The `SetDefault()` method calls `slog.SetDefault()` with your configured logger, making all standard library logging operations use your custom configuration.
@@ -163,18 +211,25 @@ import (
 func main() {
     // Create a handler with custom configuration
     handler, err := logger.NewHandler(
+        // Global options
         logger.WithLevel(slog.LevelDebug),
         logger.WithAddSource(true),
         logger.WithTimeFormat("2006-01-02 15:04:05.000"),
+        
+        // Console options
         logger.WithConsole(true),
-        logger.WithColor(true),
-        logger.WithFormatter("{time} [{level}] {file} {message} {attrs}"),
+        logger.WithConsoleColor(true),
+        logger.WithConsoleFormatter("{time} [{level}] {file} {message} {attrs}"),
+        
+        // File options
         logger.WithFile(true),
         logger.WithFilePath("./logs/application.log"),
+        logger.WithFileFormat(logger.FormatJSON),
         logger.WithMaxSizeMB(50),
         logger.WithRetentionDays(30),
+        
+        // Custom attribute handling
         logger.WithReplaceAttr(func(groups []string, a slog.Attr) slog.Attr {
-            // Custom attribute handling
             if a.Key == "user_id" && len(groups) == 0 {
                 return slog.String("userId", a.Value.String())
             }
