@@ -220,17 +220,31 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 		attrsStr = attrBuilder.String()
 	}
 
-	// Replace placeholders
-	logLine := strings.NewReplacer(
-		PlaceholderTime, timeStr,
-		PlaceholderLevel, levelStr,
-		PlaceholderMessage, msg,
-		PlaceholderFile, fileStr,
-		PlaceholderAttrs, attrsStr,
-	).Replace(h.outputCfg.GetFormatter())
+	// Replace placeholders - use conditional replacement to avoid empty placeholder issues
+	logLine := h.outputCfg.GetFormatter()
 
-	// Remove extra spaces and add newline
-	builder.WriteString(strings.Join(strings.Fields(logLine), " "))
+	// Replace each placeholder individually, handling empty cases
+	logLine = strings.ReplaceAll(logLine, PlaceholderTime, timeStr)
+	logLine = strings.ReplaceAll(logLine, PlaceholderLevel, levelStr)
+	logLine = strings.ReplaceAll(logLine, PlaceholderMessage, msg)
+
+	// Handle file placeholder - only replace if not empty
+	if fileStr != "" {
+		logLine = strings.ReplaceAll(logLine, PlaceholderFile, fileStr)
+	} else {
+		// Remove the placeholder and any adjacent spaces
+		logLine = h.removeEmptyPlaceholder(logLine, PlaceholderFile)
+	}
+
+	// Handle attrs placeholder - only replace if not empty
+	if attrsStr != "" {
+		logLine = strings.ReplaceAll(logLine, PlaceholderAttrs, attrsStr)
+	} else {
+		// Remove the placeholder and any adjacent spaces
+		logLine = h.removeEmptyPlaceholder(logLine, PlaceholderAttrs)
+	}
+
+	builder.WriteString(logLine)
 	builder.WriteString("\n")
 }
 
@@ -284,4 +298,32 @@ func (h *customHandler) appendColorizedAttr(builder *strings.Builder, a slog.Att
 		builder.WriteString(h.colorize("=", ansiFaint))
 		builder.WriteString(fmt.Sprintf("%v", a.Value.Any()))
 	}
+}
+
+// removeEmptyPlaceholder removes a placeholder and adjacent spaces when the placeholder is empty
+func (h *customHandler) removeEmptyPlaceholder(s, placeholder string) string {
+	// Pattern: try to remove " {placeholder} " -> " "
+	// Pattern: try to remove " {placeholder}" -> ""
+	// Pattern: try to remove "{placeholder} " -> ""
+
+	// Try different patterns of space-placeholder-space combinations
+	patterns := []struct {
+		search  string
+		replace string
+	}{
+		{" " + placeholder + " ", " "}, // space-placeholder-space -> space
+		{" " + placeholder, ""},        // space-placeholder -> nothing
+		{placeholder + " ", ""},        // placeholder-space -> nothing
+		{placeholder, ""},              // just placeholder -> nothing
+	}
+
+	result := s
+	for _, pattern := range patterns {
+		if strings.Contains(result, pattern.search) {
+			result = strings.ReplaceAll(result, pattern.search, pattern.replace)
+			break // Only apply the first matching pattern
+		}
+	}
+
+	return result
 }

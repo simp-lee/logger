@@ -279,3 +279,209 @@ func TestCustomHandler_ReplaceAttr(t *testing.T) {
 		t.Error("ReplaceAttr not applied: user_id key should be replaced")
 	}
 }
+
+func TestSpacePreservation(t *testing.T) {
+	t.Run("MessageWithMultipleSpaces", func(t *testing.T) {
+		var buf bytes.Buffer
+
+		cfg := DefaultConfig()
+		outputCfg := &mockOutputConfig{
+			format:    FormatCustom,
+			color:     false,
+			formatter: "{message} {attrs}",
+		}
+
+		opts := &slog.HandlerOptions{
+			Level:     slog.LevelInfo,
+			AddSource: false,
+		}
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		logger := slog.New(handler)
+
+		// Test message with multiple spaces
+		testMessage := "this   has    multiple     spaces"
+		logger.Info(testMessage)
+
+		output := buf.String()
+		t.Logf("Output: %q", output)
+
+		// Check if multiple spaces are preserved
+		if !strings.Contains(output, "   ") {
+			t.Error("Multiple spaces in message were not preserved")
+		}
+
+		// The original message should be intact
+		if !strings.Contains(output, testMessage) {
+			t.Errorf("Original message %q not found in output %q", testMessage, output)
+		}
+	})
+
+	t.Run("AttributeValueWithMultipleSpaces", func(t *testing.T) {
+		var buf bytes.Buffer
+
+		cfg := DefaultConfig()
+		outputCfg := &mockOutputConfig{
+			format:    FormatCustom,
+			color:     false,
+			formatter: "{message} {attrs}",
+		}
+
+		opts := &slog.HandlerOptions{
+			Level:     slog.LevelInfo,
+			AddSource: false,
+		}
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		logger := slog.New(handler)
+
+		// Test attribute value with multiple spaces
+		attrValue := "value   with    multiple     spaces"
+		logger.Info("test message", "key", attrValue)
+
+		output := buf.String()
+		t.Logf("Output: %q", output)
+
+		// Check if multiple spaces in attribute value are preserved
+		if !strings.Contains(output, "   ") {
+			t.Error("Multiple spaces in attribute value were not preserved")
+		}
+
+		// The original attribute value should be intact
+		if !strings.Contains(output, attrValue) {
+			t.Errorf("Original attribute value %q not found in output %q", attrValue, output)
+		}
+	})
+
+	t.Run("JsonStringWithSpaces", func(t *testing.T) {
+		var buf bytes.Buffer
+
+		cfg := DefaultConfig()
+		outputCfg := &mockOutputConfig{
+			format:    FormatCustom,
+			color:     false,
+			formatter: "{message} {attrs}",
+		}
+
+		opts := &slog.HandlerOptions{
+			Level:     slog.LevelInfo,
+			AddSource: false,
+		}
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		logger := slog.New(handler)
+
+		// Test with JSON-like string that has important spaces
+		jsonStr := `{"name": "John   Doe", "address": "123   Main    St"}`
+		logger.Info("processing json", "data", jsonStr)
+
+		output := buf.String()
+		t.Logf("Output: %q", output)
+
+		// The JSON string should preserve its internal spaces
+		if !strings.Contains(output, jsonStr) {
+			t.Errorf("Original JSON string %q not found in output %q", jsonStr, output)
+		}
+	})
+}
+
+func TestEmptyPlaceholderHandling(t *testing.T) {
+	t.Run("EmptyFileAndAttrs", func(t *testing.T) {
+		var buf bytes.Buffer
+
+		cfg := DefaultConfig()
+		outputCfg := &mockOutputConfig{
+			format: FormatCustom,
+			color:  false,
+			// This format has spaces around placeholders that could become empty
+			formatter: "{level} {message} {file} {attrs}",
+		}
+
+		opts := &slog.HandlerOptions{
+			Level:     slog.LevelInfo,
+			AddSource: false, // This makes {file} empty
+		}
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		logger := slog.New(handler)
+
+		// Log message without attributes - both {file} and {attrs} should be empty
+		logger.Info("test message")
+
+		output := buf.String()
+		t.Logf("Output: %q", output)
+
+		// Should not have excessive spaces
+		if strings.Contains(output, "  ") {
+			t.Error("Found double spaces in output, empty placeholder cleanup may not be working")
+		}
+
+		// Should contain the message
+		if !strings.Contains(output, "test message") {
+			t.Error("Output should contain the message")
+		}
+
+		// Should be properly formatted (level + message)
+		expected := "INFO test message"
+		if !strings.Contains(output, expected) {
+			t.Errorf("Expected output to contain %q, got %q", expected, output)
+		}
+	})
+
+	t.Run("OnlyAttrsEmpty", func(t *testing.T) {
+		var buf bytes.Buffer
+
+		cfg := DefaultConfig()
+		outputCfg := &mockOutputConfig{
+			format:    FormatCustom,
+			color:     false,
+			formatter: "{level} {message} {attrs}",
+		}
+
+		opts := &slog.HandlerOptions{
+			Level:     slog.LevelInfo,
+			AddSource: false,
+		}
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		logger := slog.New(handler)
+
+		// Log message without attributes
+		logger.Info("test message")
+
+		output := buf.String()
+		t.Logf("Output: %q", output)
+
+		// Should not have trailing space from empty {attrs}
+		trimmed := strings.TrimSpace(output)
+		if strings.HasSuffix(trimmed, " ") {
+			t.Error("Output should not have trailing space from empty {attrs}")
+		}
+
+		// Should be "INFO test message" without extra spaces
+		expected := "INFO test message"
+		if !strings.Contains(output, expected) {
+			t.Errorf("Expected output to contain %q, got %q", expected, output)
+		}
+	})
+}
