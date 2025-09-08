@@ -212,3 +212,70 @@ func TestCustomHandler(t *testing.T) {
 		}
 	})
 }
+
+func TestCustomHandler_ReplaceAttr(t *testing.T) {
+	var buf bytes.Buffer
+
+	// Create a config with ReplaceAttr function
+	cfg := DefaultConfig()
+	cfg.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+		// Replace sensitive data
+		if a.Key == "password" {
+			return slog.String("password", "***")
+		}
+		// Transform specific keys
+		if a.Key == "user_id" {
+			return slog.String("uid", a.Value.String())
+		}
+		return a
+	}
+
+	outputCfg := &mockOutputConfig{
+		format:    FormatCustom,
+		color:     false,
+		formatter: "{message} {attrs}",
+	}
+
+	opts := &slog.HandlerOptions{
+		Level:       slog.LevelInfo,
+		AddSource:   false,
+		ReplaceAttr: cfg.ReplaceAttr,
+	}
+
+	handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+	if err != nil {
+		t.Fatalf("Failed to create handler: %v", err)
+	}
+
+	record := slog.Record{
+		Level:   slog.LevelInfo,
+		Message: "test login",
+	}
+	record.AddAttrs(
+		slog.String("password", "secret123"),
+		slog.String("user_id", "12345"),
+		slog.String("username", "john"),
+	)
+
+	err = handler.Handle(context.Background(), record)
+	if err != nil {
+		t.Fatalf("Handler.Handle failed: %v", err)
+	}
+
+	output := buf.String()
+	t.Logf("Output: %q", output)
+
+	// Check if ReplaceAttr was applied
+	if strings.Contains(output, "secret123") {
+		t.Error("ReplaceAttr not applied: password should be masked")
+	}
+	if !strings.Contains(output, "password=***") {
+		t.Error("ReplaceAttr not applied: password should be '***'")
+	}
+	if !strings.Contains(output, "uid=12345") {
+		t.Error("ReplaceAttr not applied: user_id should be transformed to uid")
+	}
+	if strings.Contains(output, "user_id") {
+		t.Error("ReplaceAttr not applied: user_id key should be replaced")
+	}
+}

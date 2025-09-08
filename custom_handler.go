@@ -209,6 +209,10 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 
 		isFirst := true
 		r.Attrs(func(a slog.Attr) bool {
+			// Apply ReplaceAttr if configured
+			if h.opts.ReplaceAttr != nil {
+				a = h.opts.ReplaceAttr(h.groups, a)
+			}
 			h.appendColorizedAttr(attrBuilder, a, r.Level, isFirst)
 			isFirst = false
 			return true
