@@ -94,7 +94,7 @@ defer log.Close() // Important: clean up resources when done
 | `WithFilePath` | Path to the log file | `""` |
 | `WithFileFormat` | File log format (`FormatText`, `FormatJSON`, or `FormatCustom`) | `FormatCustom` |
 | `WithFileFormatter` | Custom format template for file | `"{time} {level} {message} {file} {attrs}"` |
-| `WithMaxSizeMB` | Maximum size of log file before rotation | `10` |
+| `WithMaxSizeMB` | Maximum size of log file before rotation (0 to disable rotation) | `10` |
 | `WithRetentionDays` | Days to retain rotated log files | `7` |
 
 ### Compatibility Options
@@ -171,6 +171,8 @@ defer log.Close() // Important: ensures proper cleanup of rotation goroutines an
 ```
 
 When a log file reaches the specified size limit, it is automatically renamed with a timestamp suffix in the format `{original_name}.YYYYMMDD.HHMMSS.SSS` and a new empty log file is created. Rotated log files older than the retention period are automatically cleaned up once per day.
+
+**Note**: Setting `WithMaxSizeMB(0)` completely disables file rotation. The log file will continue to grow without any size limits. Negative values are reset to the default value (10MB).
 
 ## Multiple Destinations
 
@@ -299,15 +301,17 @@ Thread-safe concurrent logging with benchmark test data:
 
 | Test Scenario | Performance | Memory | Notes |
 |---------------|-------------|---------|-------|
-| **Memory Output** | ~1,700 ns/op | 1,302 B/op (18 allocs) | Baseline |
-| **File Output** | ~2,594,075 ns/op | 1,165 B/op (8 allocs) | I/O bound |
-| **Text Format** | ~1,600 ns/op | 914 B/op (18 allocs) | Fastest |
-| **JSON Format** | ~1,654 ns/op | 914 B/op (18 allocs) | Structured |
-| **Custom Format** | ~1,659 ns/op | 914 B/op (18 allocs) | Flexible |
-| **Color Processing** | +7.7% overhead | Higher memory | vs no-color |
-| **With Rotation** | ~2,897,216 ns/op | 1,236 B/op (8 allocs) | +8.6% overhead |
-| **Concurrent Logging** | ~1,634 ns/op | 874 B/op (15 allocs) | Multi-threaded |
-| **Multi-Handler** | ~4,918 ns/op | 2,371 B/op (40 allocs) | Multiple outputs |
+| **Memory Output** | ~1,549 ns/op | 1,273 B/op (18 allocs) | Baseline |
+| **File Output** | ~2,752,644 ns/op | 1,150 B/op (8 allocs) | I/O bound |
+| **Text Format** | ~1,627 ns/op | 913 B/op (18 allocs) | Human readable |
+| **JSON Format** | ~1,570 ns/op | 913 B/op (18 allocs) | Structured data |
+| **Custom Format** | ~1,657 ns/op | 913 B/op (18 allocs) | Flexible |
+| **With Color** | ~4,520 ns/op | 2,218 B/op (28 allocs) | Color processing |
+| **Without Color** | ~4,310 ns/op | 1,722 B/op (24 allocs) | ~4.6% faster |
+| **No Rotation** | ~3,230,165 ns/op | 1,235 B/op (8 allocs) | Rotation disabled |
+| **With Rotation** | ~3,390,838 ns/op | 1,243 B/op (8 allocs) | ~5% overhead vs no rotation |
+| **Concurrent Logging** | ~1,630 ns/op | 873 B/op (15 allocs) | Multi-threaded |
+| **Multi-Handler** | ~5,044 ns/op | 2,371 B/op (40 allocs) | Multiple outputs |
 
 ### Concurrent Tests
 | Scenario | Goroutines | Messages | Throughput | Status |

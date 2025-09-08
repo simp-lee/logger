@@ -173,7 +173,8 @@ func WithFileFormatter(formatter string) Option {
 	}
 }
 
-// WithMaxSizeMB sets the maximum size of the log file in megabytes
+// WithMaxSizeMB sets the maximum size of the log file in megabytes.
+// Set to 0 to disable file rotation. Negative values will be reset to the default.
 func WithMaxSizeMB(maxSizeMB int) Option {
 	return func(c *Config) {
 		c.File.MaxSizeMB = maxSizeMB
@@ -254,7 +255,8 @@ func validateConfig(cfg *Config) error {
 			return fmt.Errorf("error checking log directory %s: %w", dir, err)
 		}
 
-		if cfg.File.MaxSizeMB <= 0 {
+		// MaxSizeMB == 0 means disable rotation, negative values are reset to default
+		if cfg.File.MaxSizeMB < 0 {
 			cfg.File.MaxSizeMB = DefaultMaxSizeMB
 		}
 

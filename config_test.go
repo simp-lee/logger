@@ -266,6 +266,38 @@ func TestValidateConfig(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "file config with rotation disabled (MaxSizeMB=0)",
+			config: &Config{
+				Level: slog.LevelInfo,
+				Console: ConsoleConfig{
+					Enabled: false,
+				},
+				File: FileConfig{
+					Enabled:   true,
+					Format:    FormatText,
+					Path:      filepath.Join(os.TempDir(), "test_no_rotation.log"),
+					MaxSizeMB: 0, // Should disable rotation
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "file config with negative MaxSizeMB (should be reset to default)",
+			config: &Config{
+				Level: slog.LevelInfo,
+				Console: ConsoleConfig{
+					Enabled: false,
+				},
+				File: FileConfig{
+					Enabled:   true,
+					Format:    FormatText,
+					Path:      filepath.Join(os.TempDir(), "test_negative.log"),
+					MaxSizeMB: -5, // Should be reset to DefaultMaxSizeMB
+				},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -276,4 +308,51 @@ func TestValidateConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestConfigValidationBehavior tests specific validation behaviors
+func TestConfigValidationBehavior(t *testing.T) {
+	t.Run("MaxSizeMB=0 should remain 0 (rotation disabled)", func(t *testing.T) {
+		cfg := &Config{
+			Level:   slog.LevelInfo,
+			Console: ConsoleConfig{Enabled: true},
+			File: FileConfig{
+				Enabled:   true,
+				Format:    FormatText,
+				Path:      filepath.Join(os.TempDir(), "test.log"),
+				MaxSizeMB: 0, // Should remain 0 to disable rotation
+			},
+		}
+
+		err := validateConfig(cfg)
+		if err != nil {
+			t.Fatalf("validateConfig() failed: %v", err)
+		}
+
+		if cfg.File.MaxSizeMB != 0 {
+			t.Errorf("Expected MaxSizeMB to remain 0, got %d", cfg.File.MaxSizeMB)
+		}
+	})
+
+	t.Run("Negative MaxSizeMB should be reset to default", func(t *testing.T) {
+		cfg := &Config{
+			Level:   slog.LevelInfo,
+			Console: ConsoleConfig{Enabled: true},
+			File: FileConfig{
+				Enabled:   true,
+				Format:    FormatText,
+				Path:      filepath.Join(os.TempDir(), "test.log"),
+				MaxSizeMB: -5, // Should be reset to default
+			},
+		}
+
+		err := validateConfig(cfg)
+		if err != nil {
+			t.Fatalf("validateConfig() failed: %v", err)
+		}
+
+		if cfg.File.MaxSizeMB != DefaultMaxSizeMB {
+			t.Errorf("Expected MaxSizeMB to be reset to default %d, got %d", DefaultMaxSizeMB, cfg.File.MaxSizeMB)
+		}
+	})
 }
