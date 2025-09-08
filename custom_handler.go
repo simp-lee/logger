@@ -178,15 +178,7 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 	timeStr := h.colorize(r.Time.In(h.globalCfg.TimeZone).Format(h.globalCfg.TimeFormat), ansiFaint)
 	levelStr := h.colorizeLevel(r.Level)
 
-	// Handle group prefix
-	var msg string
-	if len(h.groups) > 0 {
-		groupPrefix := strings.Join(h.groups, ".")
-		msg = fmt.Sprintf("%s: %s", groupPrefix, r.Message)
-	} else {
-		msg = r.Message
-	}
-	msg = h.colorizeMessage(msg, r.Level)
+	msg := h.colorizeMessage(r.Message, r.Level)
 
 	// Handle file
 	var fileStr string
@@ -289,12 +281,18 @@ func (h *customHandler) appendColorizedAttr(builder *strings.Builder, a slog.Att
 		builder.WriteByte(' ')
 	}
 
+	// Build the key with group prefixes (slog standard behavior)
+	key := a.Key
+	if len(h.groups) > 0 {
+		key = strings.Join(h.groups, ".") + "." + a.Key
+	}
+
 	if level >= slog.LevelError && a.Key == "error" {
-		builder.WriteString(h.colorize(a.Key, ansiBrightRedFaint))
+		builder.WriteString(h.colorize(key, ansiBrightRedFaint))
 		builder.WriteString(h.colorize("=", ansiBrightRedFaint))
 		builder.WriteString(h.colorize(fmt.Sprintf("%v", a.Value.Any()), ansiBrightRed))
 	} else {
-		builder.WriteString(h.colorize(a.Key, ansiFaint))
+		builder.WriteString(h.colorize(key, ansiFaint))
 		builder.WriteString(h.colorize("=", ansiFaint))
 		builder.WriteString(fmt.Sprintf("%v", a.Value.Any()))
 	}

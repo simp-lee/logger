@@ -112,7 +112,7 @@ func TestCustomHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("WithGroup", func(t *testing.T) {
+	t.Run("WithGroupBasic", func(t *testing.T) {
 		var buf bytes.Buffer
 
 		cfg := DefaultConfig()
@@ -135,6 +135,7 @@ func TestCustomHandler(t *testing.T) {
 			Level:   slog.LevelInfo,
 			Message: "test message",
 		}
+		record.AddAttrs(slog.String("key", "value"))
 
 		err = newHandler.Handle(context.Background(), record)
 		if err != nil {
@@ -142,8 +143,13 @@ func TestCustomHandler(t *testing.T) {
 		}
 
 		output := buf.String()
-		if !strings.Contains(output, "test_group: test message") {
-			t.Errorf("Output doesn't contain group prefix: %q", output)
+		// With proper slog behavior, message should not contain group prefix
+		if !strings.Contains(output, "test message") {
+			t.Errorf("Output doesn't contain original message: %q", output)
+		}
+		// But attributes should be prefixed with group
+		if !strings.Contains(output, "test_group.key=value") {
+			t.Errorf("Output doesn't contain grouped attribute: %q", output)
 		}
 	})
 
