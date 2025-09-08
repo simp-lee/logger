@@ -2,60 +2,81 @@ package logger
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 )
 
-func NewHandler(opts ...Option) (slog.Handler, error) {
-	// Create a new config with default values
-	cfg := DefaultConfig()
+// handlerResult holds a handler and its associated closer
+type handlerResult struct {
+	handler slog.Handler
+	closer  io.Closer
+}
 
-	// Apply options
+// newHandler creates a handler with resource management
+func newHandler(opts ...Option) (*handlerResult, error) {
+	cfg := DefaultConfig()
 	for _, opt := range opts {
 		opt(cfg)
 	}
 
-	// Validate the configuration
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
 
 	var handlers []slog.Handler
+	var closers []io.Closer
 
-	// Create console handler
+	// Console handler
 	if cfg.Console.Enabled {
-		console, err := newConsoleHandler(cfg)
+		handler, err := newConsoleHandler(cfg)
 		if err != nil {
-			return nil, fmt.Errorf("error creating console handler: %w", err)
+			return nil, fmt.Errorf("console handler error: %w", err)
 		}
-		handlers = append(handlers, console)
+		handlers = append(handlers, handler)
 	}
 
-	// Create file handler
+	// File handler
 	if cfg.File.Enabled && cfg.File.Path != "" {
-		file, err := newFileHandler(cfg)
+		handler, closer, err := newFileHandler(cfg)
 		if err != nil {
-			return nil, fmt.Errorf("error creating file handler: %w", err)
+			return nil, fmt.Errorf("file handler error: %w", err)
 		}
-		handlers = append(handlers, file)
+		handlers = append(handlers, handler)
+		if closer != nil {
+			closers = append(closers, closer)
+		}
 	}
 
-	// No handlers, return a default console handler
+	// Default to console if no handlers
 	if len(handlers) == 0 {
-		return slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-			Level:     cfg.Level,
-			AddSource: cfg.AddSource,
-		}), nil
+		return &handlerResult{
+			handler: slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+				Level:     cfg.Level,
+				AddSource: cfg.AddSource,
+			}),
+		}, nil
 	}
 
-	// Single handler, return it
+	var combinedCloser io.Closer
+	if len(closers) > 0 {
+		combinedCloser = &multiCloser{closers: closers}
+	}
+
+	// Single handler
 	if len(handlers) == 1 {
-		return handlers[0], nil
+		return &handlerResult{
+			handler: handlers[0],
+			closer:  combinedCloser,
+		}, nil
 	}
 
-	// Multiple handlers, return a multi handler
-	return newMultiHandler(handlers...), nil
+	// Multiple handlers
+	return &handlerResult{
+		handler: newMultiHandler(handlers...),
+		closer:  combinedCloser,
+	}, nil
 }
 
 func newConsoleHandler(cfg *Config) (slog.Handler, error) {
@@ -73,11 +94,11 @@ func newConsoleHandler(cfg *Config) (slog.Handler, error) {
 	case FormatCustom:
 		return newCustomHandler(os.Stderr, cfg, &cfg.Console, opts)
 	default:
-		return nil, fmt.Errorf("unsupported log format: %v", cfg.Console.Format)
+		return nil, fmt.Errorf("unsupported console format: %v", cfg.Console.Format)
 	}
 }
 
-func newFileHandler(cfg *Config) (slog.Handler, error) {
+func newFileHandler(cfg *Config) (slog.Handler, io.Closer, error) {
 	writer, err := newRotatingWriter(&rotatingConfig{
 		directory:     filepath.Dir(cfg.File.Path),
 		fileName:      filepath.Base(cfg.File.Path),
@@ -85,7 +106,7 @@ func newFileHandler(cfg *Config) (slog.Handler, error) {
 		retentionDays: cfg.File.RetentionDays,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("error creating rotating writer: %w", err)
+		return nil, nil, fmt.Errorf("rotating writer error: %w", err)
 	}
 
 	opts := &slog.HandlerOptions{
@@ -94,14 +115,38 @@ func newFileHandler(cfg *Config) (slog.Handler, error) {
 		ReplaceAttr: cfg.ReplaceAttr,
 	}
 
+	var handler slog.Handler
 	switch cfg.File.Format {
 	case FormatJSON:
-		return slog.NewJSONHandler(writer, opts), nil
+		handler = slog.NewJSONHandler(writer, opts)
 	case FormatText:
-		return slog.NewTextHandler(writer, opts), nil
+		handler = slog.NewTextHandler(writer, opts)
 	case FormatCustom:
-		return newCustomHandler(writer, cfg, &cfg.File, opts)
+		h, err := newCustomHandler(writer, cfg, &cfg.File, opts)
+		if err != nil {
+			writer.Close()
+			return nil, nil, err
+		}
+		handler = h
 	default:
-		return nil, fmt.Errorf("unsupported log format: %v", cfg.File.Format)
+		writer.Close()
+		return nil, nil, fmt.Errorf("unsupported file format: %v", cfg.File.Format)
 	}
+
+	return handler, writer, nil
+}
+
+// multiCloser closes multiple closers
+type multiCloser struct {
+	closers []io.Closer
+}
+
+func (mc *multiCloser) Close() error {
+	var firstErr error
+	for _, closer := range mc.closers {
+		if err := closer.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

@@ -10,6 +10,7 @@ A flexible, lightweight logger for Go built on the standard `log/slog` package, 
 - Automatic log file rotation and retention
 - Structured logging with context support
 - Independent configuration for console and file outputs
+- Easy integration with Go's standard `log/slog` package
 
 ## Installation
 
@@ -25,12 +26,12 @@ package main
 import "github.com/simp-lee/logger"
 
 func main() {
-    handler, err := logger.NewHandler()
+    log, err := logger.New()
     if err != nil {
         panic(err)
     }
+    defer log.Close() // Important: always close to clean up resources
 
-    log := logger.New(handler)
     log.Info("Hello, world!")
     log.Info("User login", "userId", 123, "username", "johndoe")
 }
@@ -39,7 +40,7 @@ func main() {
 ## Configuration
 
 ```go
-handler, err := logger.NewHandler(
+log, err := logger.New(
     // Global options
     logger.WithLevel(slog.LevelDebug),
     logger.WithAddSource(true),
@@ -58,6 +59,10 @@ handler, err := logger.NewHandler(
     logger.WithMaxSizeMB(100),
     logger.WithRetentionDays(30),
 )
+if err != nil {
+    panic(err)
+}
+defer log.Close() // Important: clean up resources when done
 ```
 
 ## Configuration Options
@@ -131,7 +136,7 @@ Error messages and error attributes are highlighted in red to make them easily i
 You can configure different output formats for console and file logging:
 
 ```go
-handler, err := logger.NewHandler(
+log, err := logger.New(
     // Console uses a custom format with color
     logger.WithConsoleFormat(logger.FormatCustom),
     logger.WithConsoleFormatter("{time} | {level} | {message}"),
@@ -142,6 +147,10 @@ handler, err := logger.NewHandler(
     logger.WithFilePath("./logs/myapp.log"),
     logger.WithFileFormat(logger.FormatJSON),
 )
+if err != nil {
+    panic(err)
+}
+defer log.Close()
 ```
 
 ## Log Rotation
@@ -149,12 +158,16 @@ handler, err := logger.NewHandler(
 File logs are automatically rotated when they reach the configured maximum size:
 
 ```go
-handler, err := logger.NewHandler(
+log, err := logger.New(
     logger.WithFile(true),
     logger.WithFilePath("./logs/myapp.log"),
     logger.WithMaxSizeMB(10),       // Rotate at 10MB
     logger.WithRetentionDays(7),    // Keep logs for 7 days
 )
+if err != nil {
+    panic(err)
+}
+defer log.Close() // Important: ensures proper cleanup of rotation goroutines and timers
 ```
 
 When a log file reaches the specified size limit, it is automatically renamed with a timestamp suffix in the format `{original_name}.YYYYMMDD.HHMMSS.SSS` and a new empty log file is created. Rotated log files older than the retention period are automatically cleaned up once per day.
@@ -164,11 +177,15 @@ When a log file reaches the specified size limit, it is automatically renamed wi
 The logger can write to both console and file simultaneously:
 
 ```go
-handler, err := logger.NewHandler(
+log, err := logger.New(
     logger.WithConsole(true),
     logger.WithFile(true),
     logger.WithFilePath("./logs/myapp.log"),
 )
+if err != nil {
+    panic(err)
+}
+defer log.Close()
 ```
 
 When multiple destinations are configured, log messages are written to all enabled destinations in parallel to maximize throughput. Each handler independently evaluates whether to process the log record based on its level configuration.
@@ -176,7 +193,12 @@ When multiple destinations are configured, log messages are written to all enabl
 ## Standard Library Integration
 
 ```go
-log := logger.New(handler)
+log, err := logger.New()
+if err != nil {
+    panic(err)
+}
+defer log.Close()
+
 log.SetDefault()
 
 // Now standard library calls use your configured logger
@@ -209,8 +231,8 @@ import (
 )
 
 func main() {
-    // Create a handler with custom configuration
-    handler, err := logger.NewHandler(
+    // Create a logger with custom configuration
+    log, err := logger.New(
         // Global options
         logger.WithLevel(slog.LevelDebug),
         logger.WithAddSource(true),
@@ -239,8 +261,8 @@ func main() {
     if err != nil {
         panic(err)
     }
+    defer log.Close() // Important: clean up background goroutines and timers
     
-    log := logger.New(handler)
     log.SetDefault() // Make this the default logger
     
     // Basic logging

@@ -1,28 +1,31 @@
 package logger
 
 import (
+	"io"
 	"log/slog"
 )
 
-// Logger is the interface for logging messages
-// By embedding *slog.Logger,
-// Logger automatically inherits all methods of slog.Logger
-// including Info, Error, Debug, Warn, With, WithGroup, etc.,
-// without needing to reimplement them
+// Logger wraps slog.Logger with automatic resource management
+// By embedding *slog.Logger, it inherits all methods like Info, Error, Debug, Warn, With, WithGroup, etc.
 type Logger struct {
 	*slog.Logger
+	closer io.Closer
 }
 
-// New creates a new Logger instance
-// This Logger will delegate all logging operations to the provided slog.Handler
-func New(handler slog.Handler) *Logger {
-	return &Logger{
-		Logger: slog.New(handler),
+// New creates a new Logger with automatic resource cleanup
+// This is the recommended way to create a logger
+func New(opts ...Option) (*Logger, error) {
+	result, err := newHandler(opts...)
+	if err != nil {
+		return nil, err
 	}
+	return &Logger{
+		Logger: slog.New(result.handler),
+		closer: result.closer,
+	}, nil
 }
 
-// Default returns a new Logger with the default slog logger
-// This allows direct use of the standard library's default behavior
+// Default returns a new Logger using the default slog configuration
 func Default() *Logger {
 	return &Logger{
 		Logger: slog.Default(),
@@ -37,4 +40,13 @@ func Default() *Logger {
 // - Info, Warn, Error, Debug and other log level methods
 func (l *Logger) SetDefault() {
 	slog.SetDefault(l.Logger)
+}
+
+// Close cleans up any resources held by the logger
+// Always call this when you're done with the logger to prevent resource leaks
+func (l *Logger) Close() error {
+	if l.closer != nil {
+		return l.closer.Close()
+	}
+	return nil
 }

@@ -25,6 +25,7 @@ type rotatingWriter struct {
 	mutex        sync.Mutex
 	rotateSignal chan struct{}
 	cleanupTimer *time.Timer
+	closed       bool // Add a flag to track if the writer is closed
 }
 
 // newRotatingWriter creates a new rotatingWriter instance.
@@ -229,6 +230,12 @@ func (w *rotatingWriter) cleanOldLogs(ctx context.Context) {
 func (w *rotatingWriter) Close() error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
+
+	// Prevent multiple closes
+	if w.closed {
+		return nil
+	}
+	w.closed = true
 
 	if w.cleanupTimer != nil {
 		w.cleanupTimer.Stop()
