@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -13,12 +14,13 @@ type mockHandler struct {
 	handled bool
 	attrs   []slog.Attr
 	group   string
+	err     error
 }
 
 func (m *mockHandler) Enabled(context.Context, slog.Level) bool { return m.enabled }
 func (m *mockHandler) Handle(context.Context, slog.Record) error {
 	m.handled = true
-	return nil
+	return m.err
 }
 func (m *mockHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	m.attrs = attrs
@@ -89,15 +91,21 @@ func TestMultiHandler(t *testing.T) {
 			t.Error("Expected WithGroup to return a multiHandler")
 		}
 	})
-}
 
-func TestMultiError(t *testing.T) {
-	err1 := errors.New("error 1")
-	err2 := errors.New("error 2")
-	me := &multiError{errors: []error{err1, err2}}
+	t.Run("Handle with errors", func(t *testing.T) {
+		h1 := &mockHandler{enabled: true, err: errors.New("handler 1 error")}
+		h2 := &mockHandler{enabled: true, err: errors.New("handler 2 error")}
+		mh := newMultiHandler(h1, h2)
 
-	expected := "error 1; error 2"
-	if me.Error() != expected {
-		t.Errorf("Expected error string %q, got %q", expected, me.Error())
-	}
+		err := mh.Handle(context.Background(), slog.Record{})
+		if err == nil {
+			t.Error("Expected error from handlers")
+		}
+
+		// Test errors.Join functionality - the error string should contain both errors
+		errStr := err.Error()
+		if !strings.Contains(errStr, "handler 1 error") || !strings.Contains(errStr, "handler 2 error") {
+			t.Errorf("Expected combined error string, got: %q", errStr)
+		}
+	})
 }

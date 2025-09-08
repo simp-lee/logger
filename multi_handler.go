@@ -2,25 +2,11 @@ package logger
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 )
-
-type multiError struct {
-	errors []error
-}
-
-func (e *multiError) Error() string {
-	errStrings := make([]string, 0, len(e.errors))
-	for _, err := range e.errors {
-		if err != nil {
-			errStrings = append(errStrings, err.Error())
-		}
-	}
-	return strings.Join(errStrings, "; ")
-}
 
 // multiHandler is a custom slog.Handler that writes to multiple handlers
 type multiHandler struct {
@@ -64,7 +50,7 @@ func (h *multiHandler) Handle(ctx context.Context, r slog.Record) error {
 		return e == nil
 	})
 	if len(filteredErrors) > 0 {
-		return &multiError{errors: filteredErrors}
+		return errors.Join(filteredErrors...)
 	}
 
 	return nil
