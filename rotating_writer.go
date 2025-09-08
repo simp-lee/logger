@@ -71,6 +71,11 @@ func (w *rotatingWriter) Write(p []byte) (n int, err error) {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
+	// Check if the writer has been closed to avoid panic on closed channel
+	if w.closed {
+		return 0, fmt.Errorf("writer has been closed")
+	}
+
 	filePath := filepath.Join(w.config.directory, w.config.fileName)
 	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -93,7 +98,8 @@ func (w *rotatingWriter) Write(p []byte) (n int, err error) {
 	// Update the size of the file
 	size := info.Size() + int64(n)
 	// Only check for rotation if MaxSizeMB > 0 (0 means rotation is disabled)
-	if w.config.maxSizeMB > 0 && size > int64(w.config.maxSizeMB)*1024*1024 {
+	// Also check if writer is still open before sending to channel
+	if w.config.maxSizeMB > 0 && size > int64(w.config.maxSizeMB)*1024*1024 && !w.closed {
 		select {
 		case w.rotateSignal <- struct{}{}:
 			// Signal sent successfully

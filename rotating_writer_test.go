@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -394,4 +395,55 @@ func TestRotationEnabledVsDisabled(t *testing.T) {
 			t.Errorf("Rotation disabled: expected exactly 1 file, got %d: %v", len(logFiles), logFiles)
 		}
 	})
+}
+
+// TestConcurrentWriteAfterClose tests the race condition between Write and Close
+func TestConcurrentWriteAfterClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &rotatingConfig{
+		directory:     tmpDir,
+		fileName:      "test.log",
+		maxSizeMB:     1, // Enable rotation
+		retentionDays: 1,
+	}
+
+	writer, err := newRotatingWriter(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create rotating writer: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var writeErrors int
+
+	// Start a goroutine that keeps writing
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			// Write enough data to potentially trigger rotation
+			data := make([]byte, 2048) // 2KB per write
+			for j := range data {
+				data[j] = 'A'
+			}
+
+			// After Close() is called, this should return an error instead of panicking
+			_, err := writer.Write(data)
+			if err != nil {
+				writeErrors++
+			}
+			time.Sleep(1 * time.Millisecond)
+		}
+	}()
+
+	// Close the writer after a short delay
+	time.Sleep(10 * time.Millisecond)
+	writer.Close()
+
+	wg.Wait()
+
+	// After closing, writes should fail gracefully with errors, not panic
+	if writeErrors == 0 {
+		t.Errorf("Expected some write errors after Close(), but got none")
+	}
+	t.Logf("Got %d write errors after Close() - this is expected behavior", writeErrors)
 }
