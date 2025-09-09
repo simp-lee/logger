@@ -295,31 +295,31 @@ func main() {
 
 ## Performance
 
-Thread-safe concurrent logging with benchmark test data:
+High-performance thread-safe logging with optimized I/O operations and minimal memory allocations.
 
 ### Performance Benchmarks
 
-| Test Scenario | Performance | Memory | Notes |
-|---------------|-------------|---------|-------|
-| **Memory Output** | ~1,549 ns/op | 1,273 B/op (18 allocs) | Baseline |
-| **File Output** | ~2,752,644 ns/op | 1,150 B/op (8 allocs) | I/O bound |
-| **Text Format** | ~1,627 ns/op | 913 B/op (18 allocs) | Human readable |
-| **JSON Format** | ~1,570 ns/op | 913 B/op (18 allocs) | Structured data |
-| **Custom Format** | ~1,657 ns/op | 913 B/op (18 allocs) | Flexible |
-| **With Color** | ~4,520 ns/op | 2,218 B/op (28 allocs) | Color processing |
-| **Without Color** | ~4,310 ns/op | 1,722 B/op (24 allocs) | ~4.6% faster |
-| **No Rotation** | ~3,230,165 ns/op | 1,235 B/op (8 allocs) | Rotation disabled |
-| **With Rotation** | ~3,390,838 ns/op | 1,243 B/op (8 allocs) | ~5% overhead vs no rotation |
-| **Concurrent Logging** | ~1,630 ns/op | 873 B/op (15 allocs) | Multi-threaded |
-| **Multi-Handler** | ~5,044 ns/op | 2,371 B/op (40 allocs) | Multiple outputs |
+| Test Scenario | Performance (ns/op) | Memory (B/op) | Allocations | Notes |
+|---------------|---------------------|---------------|-------------|-------|
+| Memory Output | ~1,606 | 1,312 | 18 | Baseline performance |
+| File Output | ~8,909 | 24 | 2 | Optimized I/O with buffering |
+| Text Format | ~1,555 | 914 | 18 | Human readable |
+| JSON Format | ~1,565 | 914 | 18 | Structured data |
+| Custom Format | ~1,577 | 914 | 18 | Flexible formatting |
+| With Color | ~4,547 | 2,218 | 28 | Enhanced readability |
+| Without Color | ~3,993 | 1,722 | 24 | ~12% faster than colored |
+| No Rotation | ~8,625 | 32 | 2 | File rotation disabled |
+| With Rotation | ~8,785 | 32 | 2 | Minimal rotation overhead |
+| Concurrent Logging | ~1,591 | 874 | 15 | Multi-threaded safe |
+| Multi-Handler | ~4,855 | 2,371 | 40 | Multiple output targets |
 
 ### Concurrent Tests
-| Scenario | Goroutines | Messages | Throughput | Status |
-|----------|------------|----------|-----------|--------|
-| Basic Concurrent | 100 | 1,000 | ~60,000 msg/sec | ✅ |
-| Multi-Handler | 50 | 250 | ~25,000 msg/sec | ✅ |
-| File Rotation | 20 | 1,000 | ~1,200 msg/sec | ✅ |
-| High-Load Stress | 200 | 20,000 | ~310K-430K msg/sec | ✅ |
+| Scenario | Goroutines | Messages | Throughput (msg/sec) |
+|----------|------------|----------|---------------------|
+| Basic Concurrent | 100 | 1,000 | ~321,000 |
+| Multi-Handler | 50 | 250 | ~206,000 |
+| File Rotation | 20 | 1,000 | ~94,000 |
+| High-Load Stress | 200 | 20,000 | ~399,000 |
 
 ## License
 

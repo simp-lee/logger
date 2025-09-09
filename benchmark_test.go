@@ -670,3 +670,224 @@ func TestStressTest(t *testing.T) {
 		t.Error("No output was written during stress test")
 	}
 }
+
+// =============================================================================
+// Throughput Measurement Tests
+// =============================================================================
+
+// TestThroughputBasicConcurrent measures actual msg/sec throughput for basic concurrent logging.
+// This test provides real-world throughput measurements for README performance documentation.
+func TestThroughputBasicConcurrent(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Console.Color = false
+	cfg.Console.Format = FormatJSON
+
+	handler, err := newCustomHandler(io.Discard, cfg, &cfg.Console, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create handler: %v", err)
+	}
+
+	log := slog.New(handler)
+
+	const numGoroutines = 100
+	const messagesPerGoroutine = 10
+	var wg sync.WaitGroup
+	var totalMessages int64
+
+	start := time.Now()
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(goroutineID int) {
+			defer wg.Done()
+			for j := 0; j < messagesPerGoroutine; j++ {
+				log.Info("Concurrent message",
+					"goroutine", goroutineID,
+					"message", j,
+					"timestamp", time.Now().UnixNano())
+				atomic.AddInt64(&totalMessages, 1)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	duration := time.Since(start)
+
+	expectedMessages := int64(numGoroutines * messagesPerGoroutine)
+	actualMessages := atomic.LoadInt64(&totalMessages)
+
+	if actualMessages != expectedMessages {
+		t.Errorf("Expected %d messages, got %d", expectedMessages, actualMessages)
+	}
+
+	messagesPerSecond := float64(actualMessages) / duration.Seconds()
+	t.Logf("Basic Concurrent: %d messages in %v (%.0f msg/sec)",
+		actualMessages, duration, messagesPerSecond)
+}
+
+// TestThroughputMultiHandler measures actual msg/sec throughput for multi-handler concurrent logging.
+// This test validates performance when logging to multiple destinations simultaneously.
+func TestThroughputMultiHandler(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Console.Color = false
+
+	handler1, err := newCustomHandler(io.Discard, cfg, &cfg.Console, &slog.HandlerOptions{Level: slog.LevelInfo})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler2, err := newCustomHandler(io.Discard, cfg, &cfg.Console, &slog.HandlerOptions{Level: slog.LevelInfo})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	multiH := newMultiHandler(handler1, handler2)
+	log := slog.New(multiH)
+
+	const numGoroutines = 50
+	const messagesPerGoroutine = 5
+	var wg sync.WaitGroup
+	var totalMessages int64
+
+	start := time.Now()
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(goroutineID int) {
+			defer wg.Done()
+			for j := 0; j < messagesPerGoroutine; j++ {
+				log.Info("Multi-handler message",
+					"goroutine", goroutineID,
+					"message", j)
+				atomic.AddInt64(&totalMessages, 1)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	duration := time.Since(start)
+
+	expectedMessages := int64(numGoroutines * messagesPerGoroutine)
+	actualMessages := atomic.LoadInt64(&totalMessages)
+
+	if actualMessages != expectedMessages {
+		t.Errorf("Expected %d messages, got %d", expectedMessages, actualMessages)
+	}
+
+	messagesPerSecond := float64(actualMessages) / duration.Seconds()
+	t.Logf("Multi-Handler: %d messages in %v (%.0f msg/sec)",
+		actualMessages, duration, messagesPerSecond)
+}
+
+// TestThroughputFileRotation measures actual msg/sec throughput for file rotation logging.
+// This test evaluates performance impact of log rotation in production scenarios.
+func TestThroughputFileRotation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	log, err := New(
+		WithFilePath(tmpDir+"/throughput.log"),
+		WithMaxSizeMB(10), // Large enough to avoid rotation during test
+		WithConsole(false),
+	)
+	if err != nil {
+		t.Fatalf("Failed to create logger: %v", err)
+	}
+	defer log.Close()
+
+	const numGoroutines = 20
+	const messagesPerGoroutine = 50
+	var wg sync.WaitGroup
+	var totalMessages int64
+
+	start := time.Now()
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(goroutineID int) {
+			defer wg.Done()
+			for j := 0; j < messagesPerGoroutine; j++ {
+				log.Info("File rotation message",
+					"goroutine", goroutineID,
+					"message", j,
+					"data", fmt.Sprintf("data-%d-%d", goroutineID, j))
+				atomic.AddInt64(&totalMessages, 1)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	duration := time.Since(start)
+
+	expectedMessages := int64(numGoroutines * messagesPerGoroutine)
+	actualMessages := atomic.LoadInt64(&totalMessages)
+
+	if actualMessages != expectedMessages {
+		t.Errorf("Expected %d messages, got %d", expectedMessages, actualMessages)
+	}
+
+	messagesPerSecond := float64(actualMessages) / duration.Seconds()
+	t.Logf("File Rotation: %d messages in %v (%.0f msg/sec)",
+		actualMessages, duration, messagesPerSecond)
+}
+
+// TestThroughputHighLoadStress measures actual msg/sec throughput under high-load stress conditions.
+// This test validates logger performance under maximum concurrent load for capacity planning.
+func TestThroughputHighLoadStress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping throughput stress test in short mode")
+	}
+
+	var buf bytes.Buffer
+
+	cfg := DefaultConfig()
+	cfg.Console.Color = false
+	cfg.Console.Format = FormatJSON
+	handler, err := newCustomHandler(&buf, cfg, &cfg.Console, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create handler: %v", err)
+	}
+
+	log := slog.New(handler)
+
+	const numGoroutines = 200
+	const messagesPerGoroutine = 100
+	var wg sync.WaitGroup
+	var totalMessages int64
+
+	start := time.Now()
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(goroutineID int) {
+			defer wg.Done()
+
+			for j := 0; j < messagesPerGoroutine; j++ {
+				log.Info("High-load stress message",
+					"goroutine", goroutineID,
+					"message", j,
+					"data", fmt.Sprintf("stress-data-%d-%d", goroutineID, j),
+					"timestamp", time.Now().UnixNano(),
+				)
+				atomic.AddInt64(&totalMessages, 1)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	duration := time.Since(start)
+
+	expectedMessages := int64(numGoroutines * messagesPerGoroutine)
+	actualMessages := atomic.LoadInt64(&totalMessages)
+
+	if actualMessages != expectedMessages {
+		t.Errorf("Expected %d messages, got %d", expectedMessages, actualMessages)
+	}
+
+	messagesPerSecond := float64(actualMessages) / duration.Seconds()
+	t.Logf("High-Load Stress: %d messages in %v (%.0f msg/sec)",
+		actualMessages, duration, messagesPerSecond)
+}

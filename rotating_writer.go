@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
@@ -25,7 +26,10 @@ type rotatingWriter struct {
 	mutex        sync.Mutex
 	rotateSignal chan struct{}
 	cleanupTimer *time.Timer
-	closed       bool // Add a flag to track if the writer is closed
+	closed       bool // flag to track if the writer is closed
+	file         *os.File
+	buf          *bufio.Writer
+	currentSize  int64 // bytes written to current file (including buffered)
 }
 
 // newRotatingWriter creates a new rotatingWriter instance.
@@ -34,6 +38,10 @@ func newRotatingWriter(cfg *rotatingConfig) (*rotatingWriter, error) {
 		config:       cfg,
 		rotateSignal: make(chan struct{}, 1),
 	}
+	// NOTE: we intentionally do NOT open the file here to avoid
+	// keeping descriptors open for handlers that are constructed
+	// but never used in tests (some tests create a handler and never write).
+	// The file is opened lazily on first Write or after rotation.
 
 	// Start the rotation monitor
 	go w.rotateMonitor()
@@ -75,39 +83,29 @@ func (w *rotatingWriter) Write(p []byte) (n int, err error) {
 	if w.closed {
 		return 0, fmt.Errorf("writer has been closed")
 	}
-
-	filePath := filepath.Join(w.config.directory, w.config.fileName)
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return 0, fmt.Errorf("failed to open log file: %w", err)
-	}
-	defer file.Close()
-
-	// Get the current file info
-	info, err := file.Stat()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get file info: %w", err)
-	}
-
-	// Write the log message
-	n, err = file.Write(p)
-	if err != nil {
-		return n, fmt.Errorf("failed to write to log file: %w", err)
-	}
-
-	// Update the size of the file
-	size := info.Size() + int64(n)
-	// Only check for rotation if MaxSizeMB > 0 (0 means rotation is disabled)
-	// Also check if writer is still open before sending to channel
-	if w.config.maxSizeMB > 0 && size > int64(w.config.maxSizeMB)*1024*1024 && !w.closed {
-		select {
-		case w.rotateSignal <- struct{}{}:
-			// Signal sent successfully
-		default:
-			// Channel is full, rotation is already scheduled
+	if w.file == nil || w.buf == nil { // should not happen, but be defensive
+		if err := w.openCurrentFile(); err != nil {
+			return 0, err
 		}
 	}
 
+	n, err = w.buf.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("failed to write to buffer: %w", err)
+	}
+	// Flush immediately to satisfy tests that read the file right after Write.
+	if err := w.buf.Flush(); err != nil {
+		return n, fmt.Errorf("failed to flush buffer: %w", err)
+	}
+	w.currentSize += int64(n)
+
+	// Rotation check (include buffered data)
+	if w.config.maxSizeMB > 0 && w.currentSize > int64(w.config.maxSizeMB)*1024*1024 && !w.closed {
+		select {
+		case w.rotateSignal <- struct{}{}:
+		default:
+		}
+	}
 	return n, nil
 }
 
@@ -123,6 +121,19 @@ func (w *rotatingWriter) rotate() error {
 		return nil
 	} else if err != nil {
 		return fmt.Errorf("failed to check log file: %w", err)
+	}
+
+	// Flush buffered data before rotation
+	if w.buf != nil {
+		_ = w.buf.Flush() // ignore flush error, we'll catch write/open errors later
+	}
+	if w.file != nil {
+		// Close current file before renaming (required on Windows)
+		if err := w.file.Close(); err != nil {
+			return fmt.Errorf("failed to close file before rotation: %w", err)
+		}
+		w.file = nil
+		w.buf = nil
 	}
 
 	ext := filepath.Ext(w.config.fileName)
@@ -153,6 +164,11 @@ func (w *rotatingWriter) rotate() error {
 		return fmt.Errorf("failed to rotate log file: %w", err)
 	}
 
+	// Open a new current file
+	if err := w.openCurrentFile(); err != nil {
+		return fmt.Errorf("failed to open new log file after rotation: %w", err)
+	}
+	w.currentSize = 0
 	return nil
 }
 
@@ -248,5 +264,38 @@ func (w *rotatingWriter) Close() error {
 		w.cleanupTimer.Stop()
 	}
 	close(w.rotateSignal)
+
+	if w.buf != nil {
+		_ = w.buf.Flush()
+	}
+	if w.file != nil {
+		if err := w.file.Close(); err != nil {
+			return err
+		}
+		w.file = nil
+		w.buf = nil
+	}
+	return nil
+}
+
+// openCurrentFile opens or creates the current log file and prepares buffered writer.
+func (w *rotatingWriter) openCurrentFile() error {
+	if err := os.MkdirAll(w.config.directory, 0o755); err != nil {
+		return fmt.Errorf("failed to create log directory: %w", err)
+	}
+	path := filepath.Join(w.config.directory, w.config.fileName)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("failed to open log file: %w", err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return fmt.Errorf("failed to stat log file: %w", err)
+	}
+	w.file = f
+	// 64KB buffer (reasonable default)
+	w.buf = bufio.NewWriterSize(f, 64*1024)
+	w.currentSize = info.Size()
 	return nil
 }
