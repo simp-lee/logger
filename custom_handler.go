@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -175,22 +176,89 @@ func (h *customHandler) clone() *customHandler {
 }
 
 func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
-	timeStr := h.colorize(r.Time.In(h.globalCfg.TimeZone).Format(h.globalCfg.TimeFormat), ansiFaint)
-	levelStr := h.colorizeLevel(r.Level)
+	// Process built-in attributes through ReplaceAttr like standard slog handlers
+	rep := h.opts.ReplaceAttr
 
-	msg := h.colorizeMessage(r.Message, r.Level)
+	// Build all the parts, applying ReplaceAttr to built-in attributes
+	var timeStr, levelStr, msgStr, fileStr string
 
-	// Handle file
-	var fileStr string
-	if h.opts.AddSource {
-		fs := runtime.CallersFrames([]uintptr{r.PC})
-		f, _ := fs.Next()
-		if f.File != "" {
-			fileStr = h.colorize(fmt.Sprintf("%s:%s:%d", filepath.Base(f.File), filepath.Base(f.Function), f.Line), ansiFaint)
+	// Handle time (built-in attribute)
+	if !r.Time.IsZero() {
+		timeAttr := slog.Time(slog.TimeKey, r.Time.In(h.globalCfg.TimeZone))
+		if rep != nil {
+			timeAttr = rep(nil, timeAttr) // Built-ins are not in any group
+		}
+		if !timeAttr.Equal(slog.Attr{}) { // Check if not removed by ReplaceAttr
+			timeValue := timeAttr.Value.Any()
+			if t, ok := timeValue.(time.Time); ok {
+				timeStr = h.colorize(t.Format(h.globalCfg.TimeFormat), ansiFaint)
+			} else {
+				// ReplaceAttr changed the type, use the new value
+				timeStr = h.colorize(fmt.Sprintf("%v", timeValue), ansiFaint)
+			}
 		}
 	}
 
-	// Handle attributes
+	// Handle level (built-in attribute)
+	levelAttr := slog.Any(slog.LevelKey, r.Level)
+	if rep != nil {
+		levelAttr = rep(nil, levelAttr) // Built-ins are not in any group
+	}
+	if !levelAttr.Equal(slog.Attr{}) { // Check if not removed by ReplaceAttr
+		levelValue := levelAttr.Value.Any()
+		if level, ok := levelValue.(slog.Level); ok {
+			levelStr = h.colorizeLevel(level)
+		} else {
+			// ReplaceAttr changed the type, use the new value
+			levelStr = h.colorize(fmt.Sprintf("%v", levelValue), ansiBrightGreen)
+		}
+	}
+
+	// Handle message (built-in attribute)
+	msgAttr := slog.String(slog.MessageKey, r.Message)
+	if rep != nil {
+		msgAttr = rep(nil, msgAttr) // Built-ins are not in any group
+	}
+	if !msgAttr.Equal(slog.Attr{}) { // Check if not removed by ReplaceAttr
+		msgStr = h.colorizeMessage(msgAttr.Value.String(), r.Level)
+	}
+
+	// Handle source/file (built-in attribute)
+	if h.opts.AddSource {
+		// Create source attribute like standard slog handlers
+		var source *slog.Source
+		if r.PC != 0 {
+			fs := runtime.CallersFrames([]uintptr{r.PC})
+			f, _ := fs.Next()
+			source = &slog.Source{
+				Function: f.Function,
+				File:     f.File,
+				Line:     f.Line,
+			}
+		} else {
+			// Create empty source if PC is zero (like standard slog)
+			source = &slog.Source{}
+		}
+
+		sourceAttr := slog.Any(slog.SourceKey, source)
+		if rep != nil {
+			sourceAttr = rep(nil, sourceAttr) // Built-ins are not in any group
+		}
+		if !sourceAttr.Equal(slog.Attr{}) { // Check if not removed by ReplaceAttr
+			sourceValue := sourceAttr.Value.Any()
+			if src, ok := sourceValue.(*slog.Source); ok {
+				if src.File != "" {
+					// Standard format: filename:function:line
+					fileStr = h.colorize(fmt.Sprintf("%s:%s:%d", filepath.Base(src.File), filepath.Base(src.Function), src.Line), ansiFaint)
+				}
+			} else {
+				// ReplaceAttr changed the type, use the new value
+				fileStr = h.colorize(fmt.Sprintf("%v", sourceValue), ansiFaint)
+			}
+		}
+	}
+
+	// Handle user attributes
 	var attrsStr string
 	if h.attrsIndex >= 0 {
 		attrBuilder := h.pool.Get().(*strings.Builder)
@@ -202,8 +270,8 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 		isFirst := true
 		r.Attrs(func(a slog.Attr) bool {
 			// Apply ReplaceAttr if configured
-			if h.opts.ReplaceAttr != nil {
-				a = h.opts.ReplaceAttr(h.groups, a)
+			if rep != nil {
+				a = rep(h.groups, a) // User attributes use current groups
 			}
 			h.appendColorizedAttr(attrBuilder, a, r.Level, isFirst)
 			isFirst = false
@@ -218,7 +286,7 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 	// Replace each placeholder individually, handling empty cases
 	logLine = strings.ReplaceAll(logLine, PlaceholderTime, timeStr)
 	logLine = strings.ReplaceAll(logLine, PlaceholderLevel, levelStr)
-	logLine = strings.ReplaceAll(logLine, PlaceholderMessage, msg)
+	logLine = strings.ReplaceAll(logLine, PlaceholderMessage, msgStr)
 
 	// Handle file placeholder - only replace if not empty
 	if fileStr != "" {

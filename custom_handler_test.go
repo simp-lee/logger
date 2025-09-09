@@ -286,6 +286,386 @@ func TestCustomHandler_ReplaceAttr(t *testing.T) {
 	}
 }
 
+// Test that verifies ReplaceAttr is called for built-in attributes (time, level, source, message)
+// This ensures compatibility with slog.HandlerOptions.ReplaceAttr specification
+func TestCustomHandler_ReplaceAttr_BuiltIns(t *testing.T) {
+	var buf bytes.Buffer
+
+	// Track which attributes are processed by ReplaceAttr
+	processedAttrs := make(map[string]bool)
+
+	cfg := DefaultConfig()
+	cfg.Console.Color = false
+	cfg.Console.Formatter = "{time} {level} {file} {message} {attrs}"
+	cfg.AddSource = true
+	cfg.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+		processedAttrs[a.Key] = true
+		// This should be called for ALL attributes including built-ins
+		switch a.Key {
+		case slog.TimeKey:
+			return slog.String(slog.TimeKey, "CUSTOM_TIME")
+		case slog.LevelKey:
+			return slog.String(slog.LevelKey, "CUSTOM_LEVEL")
+		case slog.SourceKey:
+			return slog.String(slog.SourceKey, "CUSTOM_SOURCE")
+		case slog.MessageKey:
+			return slog.String(slog.MessageKey, "CUSTOM_MESSAGE")
+		case "password":
+			return slog.String("password", "***")
+		default:
+			return a
+		}
+	}
+
+	outputCfg := &mockOutputConfig{
+		format:    FormatCustom,
+		color:     false,
+		formatter: "{time} {level} {file} {message} {attrs}",
+	}
+
+	opts := &slog.HandlerOptions{
+		Level:       slog.LevelInfo,
+		AddSource:   true,
+		ReplaceAttr: cfg.ReplaceAttr,
+	}
+
+	handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+	if err != nil {
+		t.Fatalf("Failed to create handler: %v", err)
+	}
+
+	record := slog.Record{
+		Time:    time.Now(),
+		Level:   slog.LevelInfo,
+		Message: "test message",
+		PC:      1, // Set a non-zero PC to trigger source handling
+	}
+	record.AddAttrs(
+		slog.String("password", "secret123"),
+		slog.String("user", "john"),
+	)
+
+	err = handler.Handle(context.Background(), record)
+	if err != nil {
+		t.Fatalf("Handler.Handle failed: %v", err)
+	}
+
+	output := buf.String()
+	t.Logf("Output: %q", output)
+
+	// Verify that ReplaceAttr was called for ALL attributes (built-ins and user)
+	expectedAttrs := []string{slog.TimeKey, slog.LevelKey, slog.SourceKey, slog.MessageKey, "password", "user"}
+	for _, attr := range expectedAttrs {
+		if !processedAttrs[attr] {
+			t.Errorf("ReplaceAttr was not called for '%s' attribute", attr)
+		}
+	}
+
+	// Verify that the output contains the replaced values
+	if !strings.Contains(output, "CUSTOM_TIME") {
+		t.Error("Output should contain replaced time value 'CUSTOM_TIME'")
+	}
+	if !strings.Contains(output, "CUSTOM_LEVEL") {
+		t.Error("Output should contain replaced level value 'CUSTOM_LEVEL'")
+	}
+	if !strings.Contains(output, "CUSTOM_SOURCE") {
+		t.Error("Output should contain replaced source value 'CUSTOM_SOURCE'")
+	}
+	if !strings.Contains(output, "CUSTOM_MESSAGE") {
+		t.Error("Output should contain replaced message value 'CUSTOM_MESSAGE'")
+	}
+	if !strings.Contains(output, "password=***") {
+		t.Error("Password should be masked")
+	}
+	if strings.Contains(output, "secret123") {
+		t.Error("Original password should not appear")
+	}
+}
+
+// Test that verifies ReplaceAttr can remove built-in attributes
+func TestCustomHandler_ReplaceAttr_RemoveBuiltIns(t *testing.T) {
+	var buf bytes.Buffer
+
+	cfg := DefaultConfig()
+	cfg.Console.Color = false
+	cfg.Console.Formatter = "{time} {level} {file} {message} {attrs}"
+	cfg.AddSource = true
+	cfg.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+		// Remove time and source attributes
+		switch a.Key {
+		case slog.TimeKey, slog.SourceKey:
+			return slog.Attr{} // Return empty attr to remove
+		default:
+			return a
+		}
+	}
+
+	outputCfg := &mockOutputConfig{
+		format:    FormatCustom,
+		color:     false,
+		formatter: "{time} {level} {file} {message} {attrs}",
+	}
+
+	opts := &slog.HandlerOptions{
+		Level:       slog.LevelInfo,
+		AddSource:   true,
+		ReplaceAttr: cfg.ReplaceAttr,
+	}
+
+	handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+	if err != nil {
+		t.Fatalf("Failed to create handler: %v", err)
+	}
+
+	record := slog.Record{
+		Time:    time.Now(),
+		Level:   slog.LevelInfo,
+		Message: "test message",
+		PC:      1,
+	}
+	record.AddAttrs(slog.String("user", "john"))
+
+	err = handler.Handle(context.Background(), record)
+	if err != nil {
+		t.Fatalf("Handler.Handle failed: %v", err)
+	}
+
+	output := buf.String()
+	t.Logf("Output: %q", output)
+
+	// Level and message should remain, time and source should be removed
+	if !strings.Contains(output, "INFO") {
+		t.Error("Level should still be present")
+	}
+	if !strings.Contains(output, "test message") {
+		t.Error("Message should still be present")
+	}
+	if !strings.Contains(output, "user=john") {
+		t.Error("User attribute should still be present")
+	}
+
+	// The placeholders for time and file should be properly removed without leaving extra spaces
+	if strings.Contains(output, "  ") {
+		t.Error("Should not have double spaces from removed placeholders")
+	}
+}
+
+// Test to verify our behavior matches standard slog handlers
+func TestCustomHandler_StandardSlogCompatibility(t *testing.T) {
+	// Test that our ReplaceAttr behavior matches standard slog.TextHandler
+	replaceAttr := func(groups []string, a slog.Attr) slog.Attr {
+		switch a.Key {
+		case slog.TimeKey:
+			return slog.String(slog.TimeKey, "CUSTOM_TIME")
+		case slog.LevelKey:
+			return slog.String(slog.LevelKey, "CUSTOM_LEVEL")
+		case slog.MessageKey:
+			return slog.String(slog.MessageKey, "CUSTOM_MESSAGE")
+		case "password":
+			return slog.String("password", "***")
+		default:
+			return a
+		}
+	}
+
+	// Track processed attributes for both handlers
+	standardProcessed := make(map[string]bool)
+	customProcessed := make(map[string]bool)
+
+	t.Run("StandardTextHandler", func(t *testing.T) {
+		var buf bytes.Buffer
+		handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{
+			Level:     slog.LevelInfo,
+			AddSource: false,
+			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+				standardProcessed[a.Key] = true
+				return replaceAttr(groups, a)
+			},
+		})
+
+		logger := slog.New(handler)
+		logger.Info("test message", "password", "secret123", "user", "john")
+	})
+
+	t.Run("CustomHandler", func(t *testing.T) {
+		var buf bytes.Buffer
+		cfg := DefaultConfig()
+		cfg.Console.Color = false
+		cfg.AddSource = false
+		cfg.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+			customProcessed[a.Key] = true
+			return replaceAttr(groups, a)
+		}
+
+		outputCfg := &mockOutputConfig{
+			format:    FormatCustom,
+			color:     false,
+			formatter: "{time} {level} {message} {attrs}",
+		}
+
+		opts := &slog.HandlerOptions{
+			Level:       slog.LevelInfo,
+			AddSource:   false,
+			ReplaceAttr: cfg.ReplaceAttr,
+		}
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		record := slog.Record{
+			Time:    time.Now(),
+			Level:   slog.LevelInfo,
+			Message: "test message",
+		}
+		record.AddAttrs(
+			slog.String("password", "secret123"),
+			slog.String("user", "john"),
+		)
+
+		err = handler.Handle(context.Background(), record)
+		if err != nil {
+			t.Fatalf("Handler.Handle failed: %v", err)
+		}
+	})
+
+	// Verify both handlers processed the same set of attributes
+	for attr := range standardProcessed {
+		if !customProcessed[attr] {
+			t.Errorf("Custom handler did not process attribute '%s' that standard handler processed", attr)
+		}
+	}
+	for attr := range customProcessed {
+		if !standardProcessed[attr] {
+			t.Errorf("Custom handler processed attribute '%s' that standard handler did not process", attr)
+		}
+	}
+}
+
+// Test to compare behavior with standard slog handlers
+func TestCustomHandler_CompareWithStandardSlog(t *testing.T) {
+	// Track which attributes are processed by ReplaceAttr
+	processedAttrs := make(map[string]bool)
+
+	replaceAttr := func(groups []string, a slog.Attr) slog.Attr {
+		processedAttrs[a.Key] = true
+		switch a.Key {
+		case slog.TimeKey:
+			return slog.String(slog.TimeKey, "CUSTOM_TIME")
+		case slog.LevelKey:
+			return slog.String(slog.LevelKey, "CUSTOM_LEVEL")
+		case slog.MessageKey:
+			return slog.String(slog.MessageKey, "CUSTOM_MESSAGE")
+		case "password":
+			return slog.String("password", "***")
+		default:
+			return a
+		}
+	}
+
+	// Test with standard TextHandler
+	t.Run("StandardTextHandler", func(t *testing.T) {
+		var buf bytes.Buffer
+		processedAttrs = make(map[string]bool) // Reset
+
+		handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{
+			Level:       slog.LevelInfo,
+			AddSource:   false, // Disable to simplify comparison
+			ReplaceAttr: replaceAttr,
+		})
+
+		logger := slog.New(handler)
+		logger.Info("test message", "password", "secret123", "user", "john")
+
+		output := buf.String()
+		t.Logf("Standard TextHandler output: %q", output)
+		t.Logf("Standard TextHandler processed attributes: %v", processedAttrs)
+
+		// Verify all built-in attributes were processed
+		expectedAttrs := []string{slog.TimeKey, slog.LevelKey, slog.MessageKey}
+		for _, attr := range expectedAttrs {
+			if !processedAttrs[attr] {
+				t.Errorf("Standard handler: ReplaceAttr was not called for %s", attr)
+			}
+		}
+	})
+
+	// Test with our custom handler
+	t.Run("CustomHandler", func(t *testing.T) {
+		var buf bytes.Buffer
+		processedAttrs = make(map[string]bool) // Reset
+
+		cfg := DefaultConfig()
+		cfg.Console.Color = false
+		cfg.Console.Formatter = "{time} {level} {message} {attrs}"
+		cfg.AddSource = false // Disable to simplify comparison
+		cfg.ReplaceAttr = replaceAttr
+
+		outputCfg := &ConsoleConfig{
+			Enabled:   true,
+			Color:     false,
+			Format:    FormatCustom,
+			Formatter: "{time} {level} {message} {attrs}",
+		}
+
+		opts := &slog.HandlerOptions{
+			Level:       slog.LevelInfo,
+			AddSource:   false,
+			ReplaceAttr: cfg.ReplaceAttr,
+		}
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		record := slog.Record{
+			Time:    time.Now(),
+			Level:   slog.LevelInfo,
+			Message: "test message",
+		}
+		record.AddAttrs(
+			slog.String("password", "secret123"),
+			slog.String("user", "john"),
+		)
+
+		err = handler.Handle(context.Background(), record)
+		if err != nil {
+			t.Fatalf("Handler.Handle failed: %v", err)
+		}
+
+		output := buf.String()
+		t.Logf("Custom handler output: %q", output)
+		t.Logf("Custom handler processed attributes: %v", processedAttrs)
+
+		// Verify all built-in attributes were processed (same as standard)
+		expectedAttrs := []string{slog.TimeKey, slog.LevelKey, slog.MessageKey}
+		for _, attr := range expectedAttrs {
+			if !processedAttrs[attr] {
+				t.Errorf("Custom handler: ReplaceAttr was not called for %s", attr)
+			}
+		}
+
+		// Verify the replacements worked
+		if !strings.Contains(output, "CUSTOM_TIME") {
+			t.Error("Custom handler: Output should contain replaced time value")
+		}
+		if !strings.Contains(output, "CUSTOM_LEVEL") {
+			t.Error("Custom handler: Output should contain replaced level value")
+		}
+		if !strings.Contains(output, "CUSTOM_MESSAGE") {
+			t.Error("Custom handler: Output should contain replaced message value")
+		}
+		if !strings.Contains(output, "password=***") {
+			t.Error("Custom handler: Password should be masked")
+		}
+		if strings.Contains(output, "secret123") {
+			t.Error("Custom handler: Original password should not appear")
+		}
+	})
+}
+
 func TestSpacePreservation(t *testing.T) {
 	t.Run("MessageWithMultipleSpaces", func(t *testing.T) {
 		var buf bytes.Buffer
