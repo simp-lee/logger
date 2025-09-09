@@ -447,3 +447,370 @@ func TestConcurrentWriteAfterClose(t *testing.T) {
 	}
 	t.Logf("Got %d write errors after Close() - this is expected behavior", writeErrors)
 }
+
+// TestDeadlockInCleanOldLogs tests potential deadlock issues in cleanOldLogs method
+func TestDeadlockInCleanOldLogs(t *testing.T) {
+	// Create temporary directory for testing
+	tempDir := t.TempDir()
+	logFile := filepath.Join(tempDir, "test.log")
+
+	// Create a logger using rotatingWriter
+	logger, err := New(
+		WithFilePath(logFile),
+		WithFileFormat(FormatText),
+		WithLevel(slog.LevelDebug),
+		WithMaxSizeMB(1),
+		WithRetentionDays(1),
+	)
+	if err != nil {
+		t.Fatalf("Failed to create logger: %v", err)
+	}
+	defer logger.Close()
+
+	// Critical: Set this logger as the default logger
+	// This way slog.Info/Warn calls will use the same rotatingWriter
+	originalDefault := slog.Default()
+	defer slog.SetDefault(originalDefault)
+	logger.SetDefault()
+
+	// Get rotatingWriter instance for direct testing
+	// Create a rotatingWriter with the same configuration for simulation
+	rotatingWriter, err := newRotatingWriter(&rotatingConfig{
+		directory:     tempDir,
+		fileName:      "test.log",
+		maxSizeMB:     1,
+		retentionDays: 1,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create rotating writer: %v", err)
+	}
+	defer rotatingWriter.Close()
+
+	// Set up a logger containing the same rotatingWriter as default logger
+	fileHandler := slog.NewTextHandler(rotatingWriter, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
+	testLogger := slog.New(fileHandler)
+	slog.SetDefault(testLogger)
+
+	// Create some old log files to trigger cleanup
+	oldLogFile := filepath.Join(tempDir, "test.log.2023-01-01")
+	if err := os.WriteFile(oldLogFile, []byte("old log content"), 0644); err != nil {
+		t.Fatalf("Failed to create old log file: %v", err)
+	}
+
+	// Set file modification time to long ago to ensure it will be cleaned up
+	oldTime := time.Now().AddDate(0, 0, -10) // 10 days ago
+	if err := os.Chtimes(oldLogFile, oldTime, oldTime); err != nil {
+		t.Fatalf("Failed to set file time: %v", err)
+	}
+
+	// Use channel and goroutine to detect deadlock
+	done := make(chan bool, 1)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Call cleanOldLogs, which might cause deadlock
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		rotatingWriter.cleanOldLogs(ctx)
+		done <- true
+	}()
+
+	// Wait for a while, if timeout occurs, consider it a deadlock
+	select {
+	case <-done:
+		t.Log("cleanOldLogs completed successfully - no deadlock detected")
+	case <-time.After(10 * time.Second):
+		t.Fatal("Deadlock detected: cleanOldLogs did not complete within 10 seconds")
+	}
+
+	wg.Wait()
+}
+
+// TestConcurrentCleanOldLogs tests behavior when calling cleanOldLogs concurrently
+func TestConcurrentCleanOldLogs(t *testing.T) {
+	tempDir := t.TempDir()
+
+	rotatingWriter, err := newRotatingWriter(&rotatingConfig{
+		directory:     tempDir,
+		fileName:      "test.log",
+		maxSizeMB:     1,
+		retentionDays: 1,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create rotating writer: %v", err)
+	}
+	defer rotatingWriter.Close()
+
+	// Set default logger to use the same rotatingWriter
+	fileHandler := slog.NewTextHandler(rotatingWriter, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
+	testLogger := slog.New(fileHandler)
+	originalDefault := slog.Default()
+	defer slog.SetDefault(originalDefault)
+	slog.SetDefault(testLogger)
+
+	// Create multiple goroutines to call cleanOldLogs concurrently
+	var wg sync.WaitGroup
+	numGoroutines := 5
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			rotatingWriter.cleanOldLogs(ctx)
+		}(i)
+	}
+
+	// Use channel to detect if all goroutines completed
+	done := make(chan bool, 1)
+	go func() {
+		wg.Wait()
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		t.Log("All concurrent cleanOldLogs calls completed successfully")
+	case <-time.After(15 * time.Second):
+		t.Fatal("Deadlock detected: concurrent cleanOldLogs calls did not complete within 15 seconds")
+	}
+}
+
+// TestDeadlockWithWrite tests if calling cleanOldLogs during write operations causes deadlock
+func TestDeadlockWithWrite(t *testing.T) {
+	tempDir := t.TempDir()
+
+	rotatingWriter, err := newRotatingWriter(&rotatingConfig{
+		directory:     tempDir,
+		fileName:      "test.log",
+		maxSizeMB:     1,
+		retentionDays: 1,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create rotating writer: %v", err)
+	}
+	defer rotatingWriter.Close()
+
+	// Set default logger
+	fileHandler := slog.NewTextHandler(rotatingWriter, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
+	testLogger := slog.New(fileHandler)
+	originalDefault := slog.Default()
+	defer slog.SetDefault(originalDefault)
+	slog.SetDefault(testLogger)
+
+	var wg sync.WaitGroup
+
+	// Goroutine 1: Continuously write logs
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 10; i++ {
+			rotatingWriter.Write([]byte("test log message\n"))
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	// Goroutine 2: Call cleanOldLogs
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(50 * time.Millisecond) // Let write start first
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		rotatingWriter.cleanOldLogs(ctx)
+	}()
+
+	done := make(chan bool, 1)
+	go func() {
+		wg.Wait()
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		t.Log("Write and cleanOldLogs completed successfully")
+	case <-time.After(10 * time.Second):
+		t.Fatal("Deadlock detected: write and cleanOldLogs did not complete within 10 seconds")
+	}
+}
+
+// TestCleanOldLogsRobustness tests the robustness of the fixed cleanOldLogs method
+func TestCleanOldLogsRobustness(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupFiles  func(string) error // Setup test files
+		expectError bool
+	}{
+		{
+			name: "NormalCleanup",
+			setupFiles: func(dir string) error {
+				// Create an old file and a new file
+				oldFile := filepath.Join(dir, "test.log.2023-01-01")
+				newFile := filepath.Join(dir, "test.log.2025-08-01")
+
+				if err := os.WriteFile(oldFile, []byte("old"), 0644); err != nil {
+					return err
+				}
+				if err := os.WriteFile(newFile, []byte("new"), 0644); err != nil {
+					return err
+				}
+
+				// Set old file time
+				oldTime := time.Now().AddDate(0, 0, -10)
+				return os.Chtimes(oldFile, oldTime, oldTime)
+			},
+			expectError: false,
+		},
+		{
+			name: "EmptyDirectory",
+			setupFiles: func(dir string) error {
+				return nil // Empty directory
+			},
+			expectError: false,
+		},
+		{
+			name: "NonExistentDirectory",
+			setupFiles: func(dir string) error {
+				// Remove directory to simulate non-existent situation
+				return os.RemoveAll(dir)
+			},
+			expectError: false, // Method should handle this gracefully
+		},
+		{
+			name: "PermissionDeniedFiles",
+			setupFiles: func(dir string) error {
+				oldFile := filepath.Join(dir, "test.log.2023-01-01")
+				if err := os.WriteFile(oldFile, []byte("protected"), 0644); err != nil {
+					return err
+				}
+
+				// Set old file time
+				oldTime := time.Now().AddDate(0, 0, -10)
+				if err := os.Chtimes(oldFile, oldTime, oldTime); err != nil {
+					return err
+				}
+
+				// Try to set read-only permission (might not work on Windows)
+				return os.Chmod(oldFile, 0444)
+			},
+			expectError: false, // Should log error but not crash
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+
+			// Setup test files
+			if err := tt.setupFiles(tempDir); err != nil {
+				t.Fatalf("Failed to setup test files: %v", err)
+			}
+
+			// Create rotatingWriter
+			rotatingWriter, err := newRotatingWriter(&rotatingConfig{
+				directory:     tempDir,
+				fileName:      "test.log",
+				maxSizeMB:     1,
+				retentionDays: 1,
+			})
+			if err != nil {
+				t.Fatalf("Failed to create rotating writer: %v", err)
+			}
+			defer rotatingWriter.Close()
+
+			// Set up default logger using the rotatingWriter
+			fileHandler := slog.NewTextHandler(rotatingWriter, &slog.HandlerOptions{
+				Level: slog.LevelDebug,
+			})
+			testLogger := slog.New(fileHandler)
+			originalDefault := slog.Default()
+			defer slog.SetDefault(originalDefault)
+			slog.SetDefault(testLogger)
+
+			// Execute cleanOldLogs (should not deadlock here)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			// This call should complete within 5 seconds, should not deadlock
+			done := make(chan bool, 1)
+			go func() {
+				rotatingWriter.cleanOldLogs(ctx)
+				done <- true
+			}()
+
+			select {
+			case <-done:
+				t.Logf("cleanOldLogs completed successfully for case: %s", tt.name)
+			case <-time.After(10 * time.Second):
+				t.Fatalf("cleanOldLogs timed out for case: %s", tt.name)
+			}
+		})
+	}
+}
+
+// TestCleanOldLogsWithCircularLogging tests circular logging scenarios
+func TestCleanOldLogsWithCircularLogging(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Create first rotatingWriter
+	rw1, err := newRotatingWriter(&rotatingConfig{
+		directory:     tempDir,
+		fileName:      "app1.log",
+		maxSizeMB:     1,
+		retentionDays: 1,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create first rotating writer: %v", err)
+	}
+	defer rw1.Close()
+
+	// Create second rotatingWriter
+	rw2, err := newRotatingWriter(&rotatingConfig{
+		directory:     tempDir,
+		fileName:      "app2.log",
+		maxSizeMB:     1,
+		retentionDays: 1,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create second rotating writer: %v", err)
+	}
+	defer rw2.Close()
+
+	// Create logger using rw1, but set as default logger
+	logger1 := slog.New(slog.NewTextHandler(rw1, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
+
+	originalDefault := slog.Default()
+	defer slog.SetDefault(originalDefault)
+	slog.SetDefault(logger1)
+
+	// Now let rw2 call cleanOldLogs
+	// This should use default logger (rw1) for logging, not rw2, so it should not deadlock
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan bool, 1)
+	go func() {
+		rw2.cleanOldLogs(ctx)
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		t.Log("Circular logging test passed - no deadlock")
+	case <-time.After(10 * time.Second):
+		t.Fatal("Circular logging test failed - deadlock detected")
+	}
+}

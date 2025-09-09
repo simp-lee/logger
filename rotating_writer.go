@@ -174,16 +174,17 @@ func (w *rotatingWriter) rotate() error {
 
 func (w *rotatingWriter) cleanOldLogs(ctx context.Context) {
 	w.mutex.Lock()
-	defer w.mutex.Unlock()
-
-	// Calculate the cutoff time for log files
 	cutoffTime := time.Now().AddDate(0, 0, -w.config.retentionDays)
+	directory := w.config.directory
+	fileName := w.config.fileName
+	w.mutex.Unlock()
 
-	// Read the log directory
-	entries, err := os.ReadDir(w.config.directory)
+	// Read the log directory without holding the lock
+	entries, err := os.ReadDir(directory)
 	if err != nil {
+		// Log the error without holding the lock to avoid deadlock
 		slog.Warn("Error reading directory",
-			slog.String("directory", w.config.directory),
+			slog.String("directory", directory),
 			slog.Any("error", err),
 		)
 		return
@@ -193,6 +194,7 @@ func (w *rotatingWriter) cleanOldLogs(ctx context.Context) {
 	for _, entry := range entries {
 		select {
 		case <-ctx.Done():
+			// Log cleanup cancelled (without holding the lock)
 			slog.Warn("Log cleanup cancelled",
 				"removed", removed,
 				"retained", retained,
@@ -208,9 +210,9 @@ func (w *rotatingWriter) cleanOldLogs(ctx context.Context) {
 			// Skip files that don't match the log file name
 			isRotatedLog := strings.HasPrefix(
 				entry.Name(),
-				strings.TrimSuffix(w.config.fileName, filepath.Ext(w.config.fileName)),
+				strings.TrimSuffix(fileName, filepath.Ext(fileName)),
 			) &&
-				entry.Name() != w.config.fileName
+				entry.Name() != fileName
 
 			if !isRotatedLog {
 				skipped++
@@ -219,6 +221,7 @@ func (w *rotatingWriter) cleanOldLogs(ctx context.Context) {
 
 			info, err := entry.Info()
 			if err != nil {
+				// Log the error without holding the lock to avoid deadlock
 				slog.Warn("Error getting file info",
 					"file", entry.Name(),
 					slog.Any("error", err),
@@ -228,7 +231,8 @@ func (w *rotatingWriter) cleanOldLogs(ctx context.Context) {
 
 			// Remove files older than the cutoff time
 			if info.ModTime().Before(cutoffTime) {
-				if err := os.Remove(filepath.Join(w.config.directory, entry.Name())); err != nil {
+				if err := os.Remove(filepath.Join(directory, entry.Name())); err != nil {
+					// Log the error without holding the lock to avoid deadlock
 					slog.Warn("Error removing old log file",
 						"file", entry.Name(),
 						slog.Any("error", err),
@@ -242,6 +246,7 @@ func (w *rotatingWriter) cleanOldLogs(ctx context.Context) {
 		}
 	}
 
+	// Log the cleanup results without holding the lock
 	slog.Info("Log cleanup completed",
 		"removed", removed,
 		"retained", retained,
