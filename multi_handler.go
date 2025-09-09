@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
-	"sync"
 )
 
 // multiHandler is a custom slog.Handler that writes to multiple handlers
@@ -13,7 +12,7 @@ type multiHandler struct {
 	handlers []slog.Handler
 }
 
-// newMultiHandler distributes records to multiple slog.Handler in parallel
+// newMultiHandler distributes records to multiple slog.Handler sequentially
 func newMultiHandler(handlers ...slog.Handler) slog.Handler {
 	return &multiHandler{handlers: handlers}
 }
@@ -30,27 +29,20 @@ func (h *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
 
 // Handle implements slog.Handler
 func (h *multiHandler) Handle(ctx context.Context, r slog.Record) error {
-	var wg sync.WaitGroup
-	errs := make([]error, len(h.handlers))
+	var errs []error
 
-	// Distribute the record to all handlers in parallel
-	for i, handler := range h.handlers {
+	// Distribute the record to all handlers sequentially
+	for _, handler := range h.handlers {
 		if handler.Enabled(ctx, r.Level) {
-			wg.Add(1)
-			go func(i int, h slog.Handler) {
-				defer wg.Done()
-				errs[i] = h.Handle(ctx, r.Clone())
-			}(i, handler)
+			if err := handler.Handle(ctx, r.Clone()); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
-	wg.Wait()
 
 	// Combine errors into a multiError
-	filteredErrors := slices.DeleteFunc(errs, func(e error) bool {
-		return e == nil
-	})
-	if len(filteredErrors) > 0 {
-		return errors.Join(filteredErrors...)
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 
 	return nil

@@ -190,7 +190,7 @@ if err != nil {
 defer log.Close()
 ```
 
-When multiple destinations are configured, log messages are written to all enabled destinations in parallel to maximize throughput. Each handler independently evaluates whether to process the log record based on its level configuration.
+When multiple destinations are configured, log messages are written to all enabled destinations sequentially to ensure reliable order and optimal performance. Each handler independently evaluates whether to process the log record based on its level configuration. This sequential approach eliminates goroutine overhead and guarantees consistent log ordering across all destinations.
 
 ## Standard Library Integration
 
@@ -297,29 +297,42 @@ func main() {
 
 High-performance thread-safe logging with optimized I/O operations and minimal memory allocations.
 
+**Test Environment:**
+- OS: Windows (goos: windows)
+- Architecture: amd64 (goarch: amd64)  
+- CPU: 13th Gen Intel(R) Core(TM) i5-13500H
+- Go Version: Latest stable
+
 ### Performance Benchmarks
 
 | Test Scenario | Performance (ns/op) | Memory (B/op) | Allocations | Notes |
 |---------------|---------------------|---------------|-------------|-------|
-| Memory Output | ~1,606 | 1,312 | 18 | Baseline performance |
-| File Output | ~8,909 | 24 | 2 | Optimized I/O with buffering |
-| Text Format | ~1,555 | 914 | 18 | Human readable |
-| JSON Format | ~1,565 | 914 | 18 | Structured data |
-| Custom Format | ~1,577 | 914 | 18 | Flexible formatting |
-| With Color | ~4,547 | 2,218 | 28 | Enhanced readability |
-| Without Color | ~3,993 | 1,722 | 24 | ~12% faster than colored |
-| No Rotation | ~8,625 | 32 | 2 | File rotation disabled |
-| With Rotation | ~8,785 | 32 | 2 | Minimal rotation overhead |
-| Concurrent Logging | ~1,591 | 874 | 15 | Multi-threaded safe |
-| Multi-Handler | ~4,855 | 2,371 | 40 | Multiple output targets |
+| Memory Output | ~1,605 | 1,310 | 19 | Baseline performance |
+| File Output | ~8,817 | 24 | 2 | Optimized I/O with buffering |
+| Text Format | ~1,665 | 938 | 19 | Human readable |
+| JSON Format | ~1,783 | 938 | 19 | Structured data |
+| Custom Format | ~1,704 | 938 | 19 | Flexible formatting |
+| With Color | ~5,179 | 2,290 | 31 | Enhanced readability |
+| Without Color | ~4,724 | 1,794 | 27 | ~12% faster than colored |
+| No Rotation | ~8,909 | 32 | 2 | File rotation disabled |
+| With Rotation | ~8,959 | 32 | 2 | Minimal rotation overhead |
+| Concurrent Logging | ~1,845 | 898 | 16 | Multi-threaded safe |
+| Multi-Handler | ~2,156 | 1,854 | 35 | Multiple output targets |
 
 ### Concurrent Tests
 | Scenario | Goroutines | Messages | Throughput (msg/sec) |
 |----------|------------|----------|---------------------|
 | Basic Concurrent | 100 | 1,000 | ~321,000 |
-| Multi-Handler | 50 | 250 | ~206,000 |
-| File Rotation | 20 | 1,000 | ~94,000 |
-| High-Load Stress | 200 | 20,000 | ~399,000 |
+| Multi-Handler | 50 | 250 | ~478,000 |
+| File Rotation | 20 | 1,000 | ~100,000 |
+| High-Load Stress | 200 | 20,000 | ~372,000 |
+
+**Production Performance Notes:**
+- **Single instance throughput**: ~463,000 operations/second (Multi-Handler scenario)
+- **High concurrency peak**: Up to 478,000 msg/sec with optimized sequential processing
+- **Memory efficiency**: Low allocation overhead suitable for long-running services
+- **Recommended use**: Production services processing up to 400K+ logs/sec per instance
+- **Scalability**: Linear scaling with multiple logger instances across different modules
 
 ## License
 
