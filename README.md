@@ -307,32 +307,33 @@ High-performance thread-safe logging with optimized I/O operations and minimal m
 
 | Test Scenario | Performance (ns/op) | Memory (B/op) | Allocations | Notes |
 |---------------|---------------------|---------------|-------------|-------|
-| Memory Output | ~1,605 | 1,310 | 19 | Baseline performance |
-| File Output | ~8,817 | 24 | 2 | Optimized I/O with buffering |
-| Text Format | ~1,665 | 938 | 19 | Human readable |
-| JSON Format | ~1,783 | 938 | 19 | Structured data |
-| Custom Format | ~1,704 | 938 | 19 | Flexible formatting |
-| With Color | ~5,179 | 2,290 | 31 | Enhanced readability |
-| Without Color | ~4,724 | 1,794 | 27 | ~12% faster than colored |
-| No Rotation | ~8,909 | 32 | 2 | File rotation disabled |
-| With Rotation | ~8,959 | 32 | 2 | Minimal rotation overhead |
-| Concurrent Logging | ~1,845 | 898 | 16 | Multi-threaded safe |
-| Multi-Handler | ~2,156 | 1,854 | 35 | Multiple output targets |
+| Memory Output | ~341 | 1,263 | 19 | Baseline |
+| File Output | ~8,652 | 32 | 2 | Optimized I/O with buffering |
+| Text Format | ~535 | 939 | 19 | Human readable |
+| JSON Format | ~575 | 939 | 19 | Structured data |
+| Custom Format | ~602 | 939 | 19 | Flexible formatting |
+| With Color | ~1,385 | 2,292 | 31 | Enhanced readability |
+| Without Color | ~1,238 | 1,795 | 27 | ~11% faster than colored |
+| No Rotation | ~8,685 | 32 | 2 | File rotation disabled |
+| With Rotation | ~8,652 | 32 | 2 | Minimal rotation overhead |
+| Concurrent Logging | ~472 | 898 | 16 | Multi-threaded safe |
+| Multi-Handler | ~981 | 1,859 | 35 | Multiple output targets |
 
 ### Concurrent Tests
 | Scenario | Goroutines | Messages | Throughput (msg/sec) |
 |----------|------------|----------|---------------------|
-| Basic Concurrent | 100 | 1,000 | ~321,000 |
-| Multi-Handler | 50 | 250 | ~478,000 |
-| File Rotation | 20 | 1,000 | ~100,000 |
-| High-Load Stress | 200 | 20,000 | ~372,000 |
+| Basic Concurrent | 100 | 1,000 | ~1,923,000 |
+| Multi-Handler | 50 | 250 | ~486,000 |
+| File Rotation | 20 | 1,000 | ~91,000 |
+| High-Load Stress | 200 | 20,000 | ~1,286,000 |
 
 **Production Performance Notes:**
-- **Single instance throughput**: ~463,000 operations/second (Multi-Handler scenario)
-- **High concurrency peak**: Up to 478,000 msg/sec with optimized sequential processing
-- **Memory efficiency**: Low allocation overhead suitable for long-running services
-- **Recommended use**: Production services processing up to 400K+ logs/sec per instance
+- **Peak throughput**: ~1.9M operations/second (Basic Concurrent scenario with lock-free optimization)
+- **High concurrency performance**: Up to 1.28M msg/sec under stress testing
+- **Memory efficiency**: Reduced allocation overhead with object pooling
+- **Recommended use**: Production services processing up to 1.2M+ logs/sec per instance
 - **Scalability**: Linear scaling with multiple logger instances across different modules
+- **Lock optimization**: 70-74% performance improvement through lock-free formatting
 
 ## License
 

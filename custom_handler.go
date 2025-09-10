@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,16 +35,26 @@ const (
 	ansiBrightMagenta  = "\033[95m"
 )
 
-type customHandler struct {
-	mu         sync.Mutex
-	out        io.Writer
+// handlerConfig stores immutable configuration data for atomic access
+type handlerConfig struct {
 	globalCfg  *Config
 	outputCfg  outputConfig
 	attrsIndex int
-	pool       *sync.Pool
 	groups     []string
 	attrs      []slog.Attr
 	opts       slog.HandlerOptions
+}
+
+type customHandler struct {
+	// Lightweight mutex to protect write operations
+	writeMu sync.Mutex
+	out     io.Writer
+
+	// Configuration data, accessed using atomic operations
+	config atomic.Value // *handlerConfig
+
+	// String builder pool, thread-safe
+	pool *sync.Pool
 }
 
 // outputConfig interface for unified access to Console and File configurations
@@ -86,53 +97,74 @@ func newCustomHandler(w io.Writer, globalCfg *Config, outputCfg outputConfig, op
 		formatter = DefaultFormatter
 	}
 
-	h := &customHandler{
-		out:        w,
+	// Create configuration object
+	cfg := &handlerConfig{
 		globalCfg:  globalCfg,
 		outputCfg:  outputCfg,
 		attrsIndex: strings.Index(formatter, PlaceholderAttrs),
-		pool: &sync.Pool{
-			New: func() any {
-				return new(strings.Builder)
-			},
-		},
-		attrs: make([]slog.Attr, 0),
+		groups:     make([]string, 0),
+		attrs:      make([]slog.Attr, 0),
 	}
 
 	if opts != nil {
-		h.opts = *opts
+		cfg.opts = *opts
 	} else {
-		h.opts = slog.HandlerOptions{
+		cfg.opts = slog.HandlerOptions{
 			Level:       globalCfg.Level,
 			AddSource:   globalCfg.AddSource,
 			ReplaceAttr: globalCfg.ReplaceAttr,
 		}
 	}
 
+	h := &customHandler{
+		out: w,
+		pool: &sync.Pool{
+			New: func() any {
+				return new(strings.Builder)
+			},
+		},
+	}
+
+	// Atomically set the configuration
+	h.config.Store(cfg)
+
 	return h, nil
 }
 
+// getConfig atomically retrieves the current configuration
+func (h *customHandler) getConfig() *handlerConfig {
+	return h.config.Load().(*handlerConfig)
+}
+
 func (h *customHandler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= h.opts.Level.Level()
+	cfg := h.getConfig()
+	return level >= cfg.opts.Level.Level()
 }
 
 func (h *customHandler) Handle(ctx context.Context, r slog.Record) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	// Lock-free access to config and formatting
+	cfg := h.getConfig()
 
+	// Add preset attributes to the record
+	for _, attr := range cfg.attrs {
+		r.AddAttrs(attr)
+	}
+
+	// Lock-free log formatting (CPU-intensive operation)
 	builder := h.pool.Get().(*strings.Builder)
 	defer func() {
 		builder.Reset()
 		h.pool.Put(builder)
 	}()
 
-	for _, attr := range h.attrs {
-		r.AddAttrs(attr)
-	}
+	h.formatLogLine(builder, r, cfg)
+	logData := []byte(builder.String())
 
-	h.formatLogLine(builder, r)
+	// Only lock during write (I/O operation)
+	h.writeMu.Lock()
+	_, err := h.out.Write(logData)
+	h.writeMu.Unlock()
 
-	_, err := h.out.Write([]byte(builder.String()))
 	return err
 }
 
@@ -141,11 +173,23 @@ func (h *customHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		return h
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	// Lock-free operation: copy config and add new attributes
+	oldCfg := h.getConfig()
+	newCfg := &handlerConfig{
+		globalCfg:  oldCfg.globalCfg,
+		outputCfg:  oldCfg.outputCfg,
+		attrsIndex: oldCfg.attrsIndex,
+		groups:     slices.Clone(oldCfg.groups),
+		attrs:      append(slices.Clone(oldCfg.attrs), attrs...),
+		opts:       oldCfg.opts,
+	}
 
-	newHandler := h.clone()
-	newHandler.attrs = append(slices.Clone(h.attrs), attrs...)
+	newHandler := &customHandler{
+		out:  h.out,
+		pool: h.pool,
+	}
+	newHandler.config.Store(newCfg)
+
 	return newHandler
 }
 
@@ -154,47 +198,46 @@ func (h *customHandler) WithGroup(name string) slog.Handler {
 		return h
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	// Lock-free operation: copy config and add new group
+	oldCfg := h.getConfig()
+	newCfg := &handlerConfig{
+		globalCfg:  oldCfg.globalCfg,
+		outputCfg:  oldCfg.outputCfg,
+		attrsIndex: oldCfg.attrsIndex,
+		groups:     append(slices.Clone(oldCfg.groups), name),
+		attrs:      slices.Clone(oldCfg.attrs),
+		opts:       oldCfg.opts,
+	}
 
-	newHandler := h.clone()
-	newHandler.groups = append(slices.Clone(h.groups), name)
+	newHandler := &customHandler{
+		out:  h.out,
+		pool: h.pool,
+	}
+	newHandler.config.Store(newCfg)
+
 	return newHandler
 }
 
-func (h *customHandler) clone() *customHandler {
-	return &customHandler{
-		out:        h.out,
-		globalCfg:  h.globalCfg,
-		outputCfg:  h.outputCfg,
-		attrsIndex: h.attrsIndex,
-		pool:       h.pool,
-		groups:     slices.Clone(h.groups),
-		attrs:      slices.Clone(h.attrs),
-		opts:       h.opts,
-	}
-}
-
-func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
+func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record, cfg *handlerConfig) {
 	// Process built-in attributes through ReplaceAttr like standard slog handlers
-	rep := h.opts.ReplaceAttr
+	rep := cfg.opts.ReplaceAttr
 
 	// Build all the parts, applying ReplaceAttr to built-in attributes
 	var timeStr, levelStr, msgStr, fileStr string
 
 	// Handle time (built-in attribute)
 	if !r.Time.IsZero() {
-		timeAttr := slog.Time(slog.TimeKey, r.Time.In(h.globalCfg.TimeZone))
+		timeAttr := slog.Time(slog.TimeKey, r.Time.In(cfg.globalCfg.TimeZone))
 		if rep != nil {
 			timeAttr = rep(nil, timeAttr) // Built-ins are not in any group
 		}
 		if !timeAttr.Equal(slog.Attr{}) { // Check if not removed by ReplaceAttr
 			timeValue := timeAttr.Value.Any()
 			if t, ok := timeValue.(time.Time); ok {
-				timeStr = h.colorize(t.Format(h.globalCfg.TimeFormat), ansiFaint)
+				timeStr = h.colorize(t.Format(cfg.globalCfg.TimeFormat), ansiFaint, cfg)
 			} else {
 				// ReplaceAttr changed the type, use the new value
-				timeStr = h.colorize(fmt.Sprintf("%v", timeValue), ansiFaint)
+				timeStr = h.colorize(fmt.Sprintf("%v", timeValue), ansiFaint, cfg)
 			}
 		}
 	}
@@ -207,10 +250,10 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 	if !levelAttr.Equal(slog.Attr{}) { // Check if not removed by ReplaceAttr
 		levelValue := levelAttr.Value.Any()
 		if level, ok := levelValue.(slog.Level); ok {
-			levelStr = h.colorizeLevel(level)
+			levelStr = h.colorizeLevel(level, cfg)
 		} else {
 			// ReplaceAttr changed the type, use the new value
-			levelStr = h.colorize(fmt.Sprintf("%v", levelValue), ansiBrightGreen)
+			levelStr = h.colorize(fmt.Sprintf("%v", levelValue), ansiBrightGreen, cfg)
 		}
 	}
 
@@ -220,11 +263,11 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 		msgAttr = rep(nil, msgAttr) // Built-ins are not in any group
 	}
 	if !msgAttr.Equal(slog.Attr{}) { // Check if not removed by ReplaceAttr
-		msgStr = h.colorizeMessage(msgAttr.Value.String(), r.Level)
+		msgStr = h.colorizeMessage(msgAttr.Value.String(), r.Level, cfg)
 	}
 
 	// Handle source/file (built-in attribute)
-	if h.opts.AddSource {
+	if cfg.opts.AddSource {
 		// Create source attribute like standard slog handlers
 		var source *slog.Source
 		if r.PC != 0 {
@@ -249,18 +292,18 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 			if src, ok := sourceValue.(*slog.Source); ok {
 				if src.File != "" {
 					// Standard format: filename:function:line
-					fileStr = h.colorize(fmt.Sprintf("%s:%s:%d", filepath.Base(src.File), filepath.Base(src.Function), src.Line), ansiFaint)
+					fileStr = h.colorize(fmt.Sprintf("%s:%s:%d", filepath.Base(src.File), filepath.Base(src.Function), src.Line), ansiFaint, cfg)
 				}
 			} else {
 				// ReplaceAttr changed the type, use the new value
-				fileStr = h.colorize(fmt.Sprintf("%v", sourceValue), ansiFaint)
+				fileStr = h.colorize(fmt.Sprintf("%v", sourceValue), ansiFaint, cfg)
 			}
 		}
 	}
 
 	// Handle user attributes
 	var attrsStr string
-	if h.attrsIndex >= 0 {
+	if cfg.attrsIndex >= 0 {
 		attrBuilder := h.pool.Get().(*strings.Builder)
 		defer func() {
 			attrBuilder.Reset()
@@ -271,9 +314,9 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 		r.Attrs(func(a slog.Attr) bool {
 			// Apply ReplaceAttr if configured
 			if rep != nil {
-				a = rep(h.groups, a) // User attributes use current groups
+				a = rep(cfg.groups, a) // User attributes use current groups
 			}
-			h.appendColorizedAttr(attrBuilder, a, r.Level, isFirst)
+			h.appendColorizedAttr(attrBuilder, a, r.Level, isFirst, cfg)
 			isFirst = false
 			return true
 		})
@@ -281,7 +324,7 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 	}
 
 	// Replace placeholders - use conditional replacement to avoid empty placeholder issues
-	logLine := h.outputCfg.GetFormatter()
+	logLine := cfg.outputCfg.GetFormatter()
 
 	// Replace each placeholder individually, handling empty cases
 	logLine = strings.ReplaceAll(logLine, PlaceholderTime, timeStr)
@@ -308,14 +351,14 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record) {
 	builder.WriteString("\n")
 }
 
-func (h *customHandler) colorize(s, color string) string {
-	if !h.outputCfg.GetColor() {
+func (h *customHandler) colorize(s, color string, cfg *handlerConfig) string {
+	if !cfg.outputCfg.GetColor() {
 		return s
 	}
 	return color + s + ansiReset
 }
 
-func (h *customHandler) colorizeLevel(level slog.Level) string {
+func (h *customHandler) colorizeLevel(level slog.Level, cfg *handlerConfig) string {
 	var color string
 	switch {
 	case level <= slog.LevelDebug:
@@ -330,17 +373,17 @@ func (h *customHandler) colorizeLevel(level slog.Level) string {
 		color = ansiBrightMagenta
 	}
 
-	return h.colorize(level.String(), color)
+	return h.colorize(level.String(), color, cfg)
 }
 
-func (h *customHandler) colorizeMessage(msg string, level slog.Level) string {
+func (h *customHandler) colorizeMessage(msg string, level slog.Level, cfg *handlerConfig) string {
 	if level >= slog.LevelError {
-		return h.colorize(msg, ansiBrightRed)
+		return h.colorize(msg, ansiBrightRed, cfg)
 	}
 	return msg
 }
 
-func (h *customHandler) appendColorizedAttr(builder *strings.Builder, a slog.Attr, level slog.Level, isFirst bool) {
+func (h *customHandler) appendColorizedAttr(builder *strings.Builder, a slog.Attr, level slog.Level, isFirst bool, cfg *handlerConfig) {
 	if a.Equal(slog.Attr{}) {
 		return
 	}
@@ -351,17 +394,17 @@ func (h *customHandler) appendColorizedAttr(builder *strings.Builder, a slog.Att
 
 	// Build the key with group prefixes (slog standard behavior)
 	key := a.Key
-	if len(h.groups) > 0 {
-		key = strings.Join(h.groups, ".") + "." + a.Key
+	if len(cfg.groups) > 0 {
+		key = strings.Join(cfg.groups, ".") + "." + a.Key
 	}
 
 	if level >= slog.LevelError && a.Key == "error" {
-		builder.WriteString(h.colorize(key, ansiBrightRedFaint))
-		builder.WriteString(h.colorize("=", ansiBrightRedFaint))
-		builder.WriteString(h.colorize(fmt.Sprintf("%v", a.Value.Any()), ansiBrightRed))
+		builder.WriteString(h.colorize(key, ansiBrightRedFaint, cfg))
+		builder.WriteString(h.colorize("=", ansiBrightRedFaint, cfg))
+		builder.WriteString(h.colorize(fmt.Sprintf("%v", a.Value.Any()), ansiBrightRed, cfg))
 	} else {
-		builder.WriteString(h.colorize(key, ansiFaint))
-		builder.WriteString(h.colorize("=", ansiFaint))
+		builder.WriteString(h.colorize(key, ansiFaint, cfg))
+		builder.WriteString(h.colorize("=", ansiFaint, cfg))
 		builder.WriteString(fmt.Sprintf("%v", a.Value.Any()))
 	}
 }
