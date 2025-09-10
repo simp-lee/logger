@@ -692,7 +692,7 @@ func TestThroughputBasicConcurrent(t *testing.T) {
 	log := slog.New(handler)
 
 	const numGoroutines = 100
-	const messagesPerGoroutine = 10
+	const messagesPerGoroutine = 1000
 	var wg sync.WaitGroup
 	var totalMessages int64
 
@@ -747,7 +747,7 @@ func TestThroughputMultiHandler(t *testing.T) {
 	log := slog.New(multiH)
 
 	const numGoroutines = 50
-	const messagesPerGoroutine = 5
+	const messagesPerGoroutine = 100
 	var wg sync.WaitGroup
 	var totalMessages int64
 
@@ -797,7 +797,7 @@ func TestThroughputFileRotation(t *testing.T) {
 	defer log.Close()
 
 	const numGoroutines = 20
-	const messagesPerGoroutine = 50
+	const messagesPerGoroutine = 500
 	var wg sync.WaitGroup
 	var totalMessages int64
 

@@ -35,14 +35,38 @@ const (
 	ansiBrightMagenta  = "\033[95m"
 )
 
+// TokenType represents the type of a template token
+type TokenType int
+
+const (
+	TokenTypeText TokenType = iota
+	TokenTypeTime
+	TokenTypeLevel
+	TokenTypeMessage
+	TokenTypeFile
+	TokenTypeAttrs
+)
+
+// Token represents a parsed template component
+type Token struct {
+	Type TokenType
+	Text string // For static text tokens
+}
+
+// ParsedTemplate holds the pre-parsed template tokens
+type ParsedTemplate struct {
+	tokens []Token
+}
+
 // handlerConfig stores immutable configuration data for atomic access
 type handlerConfig struct {
-	globalCfg  *Config
-	outputCfg  outputConfig
-	attrsIndex int
-	groups     []string
-	attrs      []slog.Attr
-	opts       slog.HandlerOptions
+	globalCfg      *Config
+	outputCfg      outputConfig
+	attrsIndex     int
+	groups         []string
+	attrs          []slog.Attr
+	opts           slog.HandlerOptions
+	parsedTemplate *ParsedTemplate // Pre-parsed template for efficient formatting
 }
 
 type customHandler struct {
@@ -91,19 +115,83 @@ func (c *FileConfig) GetFormatter() string {
 	return c.Formatter
 }
 
+// parseTemplate parses a format template into tokens for efficient rendering
+func parseTemplate(template string) *ParsedTemplate {
+	if template == "" {
+		template = DefaultFormatter
+	}
+
+	var tokens []Token
+	remaining := template
+
+	for len(remaining) > 0 {
+		// Find the next placeholder
+		nextPlaceholder := -1
+		var placeholderType TokenType
+		var placeholderLen int
+
+		// Check for each placeholder type
+		placeholders := []struct {
+			text      string
+			tokenType TokenType
+		}{
+			{PlaceholderTime, TokenTypeTime},
+			{PlaceholderLevel, TokenTypeLevel},
+			{PlaceholderMessage, TokenTypeMessage},
+			{PlaceholderFile, TokenTypeFile},
+			{PlaceholderAttrs, TokenTypeAttrs},
+		}
+
+		for _, p := range placeholders {
+			if idx := strings.Index(remaining, p.text); idx != -1 {
+				if nextPlaceholder == -1 || idx < nextPlaceholder {
+					nextPlaceholder = idx
+					placeholderType = p.tokenType
+					placeholderLen = len(p.text)
+				}
+			}
+		}
+
+		if nextPlaceholder == -1 {
+			// No more placeholders, add remaining text as static token
+			if len(remaining) > 0 {
+				tokens = append(tokens, Token{Type: TokenTypeText, Text: remaining})
+			}
+			break
+		}
+
+		// Add static text before placeholder (if any)
+		if nextPlaceholder > 0 {
+			tokens = append(tokens, Token{Type: TokenTypeText, Text: remaining[:nextPlaceholder]})
+		}
+
+		// Add placeholder token
+		tokens = append(tokens, Token{Type: placeholderType})
+
+		// Move to after the placeholder
+		remaining = remaining[nextPlaceholder+placeholderLen:]
+	}
+
+	return &ParsedTemplate{tokens: tokens}
+}
+
 func newCustomHandler(w io.Writer, globalCfg *Config, outputCfg outputConfig, opts *slog.HandlerOptions) (slog.Handler, error) {
 	formatter := outputCfg.GetFormatter()
 	if formatter == "" {
 		formatter = DefaultFormatter
 	}
 
+	// Parse template at startup time for efficient formatting
+	parsedTemplate := parseTemplate(formatter)
+
 	// Create configuration object
 	cfg := &handlerConfig{
-		globalCfg:  globalCfg,
-		outputCfg:  outputCfg,
-		attrsIndex: strings.Index(formatter, PlaceholderAttrs),
-		groups:     make([]string, 0),
-		attrs:      make([]slog.Attr, 0),
+		globalCfg:      globalCfg,
+		outputCfg:      outputCfg,
+		attrsIndex:     strings.Index(formatter, PlaceholderAttrs),
+		groups:         make([]string, 0),
+		attrs:          make([]slog.Attr, 0),
+		parsedTemplate: parsedTemplate,
 	}
 
 	if opts != nil {
@@ -176,12 +264,13 @@ func (h *customHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	// Lock-free operation: copy config and add new attributes
 	oldCfg := h.getConfig()
 	newCfg := &handlerConfig{
-		globalCfg:  oldCfg.globalCfg,
-		outputCfg:  oldCfg.outputCfg,
-		attrsIndex: oldCfg.attrsIndex,
-		groups:     slices.Clone(oldCfg.groups),
-		attrs:      append(slices.Clone(oldCfg.attrs), attrs...),
-		opts:       oldCfg.opts,
+		globalCfg:      oldCfg.globalCfg,
+		outputCfg:      oldCfg.outputCfg,
+		attrsIndex:     oldCfg.attrsIndex,
+		groups:         slices.Clone(oldCfg.groups),
+		attrs:          append(slices.Clone(oldCfg.attrs), attrs...),
+		opts:           oldCfg.opts,
+		parsedTemplate: oldCfg.parsedTemplate, // Share the parsed template
 	}
 
 	newHandler := &customHandler{
@@ -201,12 +290,13 @@ func (h *customHandler) WithGroup(name string) slog.Handler {
 	// Lock-free operation: copy config and add new group
 	oldCfg := h.getConfig()
 	newCfg := &handlerConfig{
-		globalCfg:  oldCfg.globalCfg,
-		outputCfg:  oldCfg.outputCfg,
-		attrsIndex: oldCfg.attrsIndex,
-		groups:     append(slices.Clone(oldCfg.groups), name),
-		attrs:      slices.Clone(oldCfg.attrs),
-		opts:       oldCfg.opts,
+		globalCfg:      oldCfg.globalCfg,
+		outputCfg:      oldCfg.outputCfg,
+		attrsIndex:     oldCfg.attrsIndex,
+		groups:         append(slices.Clone(oldCfg.groups), name),
+		attrs:          slices.Clone(oldCfg.attrs),
+		opts:           oldCfg.opts,
+		parsedTemplate: oldCfg.parsedTemplate, // Share the parsed template
 	}
 
 	newHandler := &customHandler{
@@ -222,8 +312,8 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record, c
 	// Process built-in attributes through ReplaceAttr like standard slog handlers
 	rep := cfg.opts.ReplaceAttr
 
-	// Build all the parts, applying ReplaceAttr to built-in attributes
-	var timeStr, levelStr, msgStr, fileStr string
+	// Pre-compute all the parts that might be needed
+	var timeStr, levelStr, msgStr, fileStr, attrsStr string
 
 	// Handle time (built-in attribute)
 	if !r.Time.IsZero() {
@@ -302,7 +392,6 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record, c
 	}
 
 	// Handle user attributes
-	var attrsStr string
 	if cfg.attrsIndex >= 0 {
 		attrBuilder := h.pool.Get().(*strings.Builder)
 		defer func() {
@@ -323,32 +412,69 @@ func (h *customHandler) formatLogLine(builder *strings.Builder, r slog.Record, c
 		attrsStr = attrBuilder.String()
 	}
 
-	// Replace placeholders - use conditional replacement to avoid empty placeholder issues
-	logLine := cfg.outputCfg.GetFormatter()
-
-	// Replace each placeholder individually, handling empty cases
-	logLine = strings.ReplaceAll(logLine, PlaceholderTime, timeStr)
-	logLine = strings.ReplaceAll(logLine, PlaceholderLevel, levelStr)
-	logLine = strings.ReplaceAll(logLine, PlaceholderMessage, msgStr)
-
-	// Handle file placeholder - only replace if not empty
-	if fileStr != "" {
-		logLine = strings.ReplaceAll(logLine, PlaceholderFile, fileStr)
-	} else {
-		// Remove the placeholder and any adjacent spaces
-		logLine = h.removeEmptyPlaceholder(logLine, PlaceholderFile)
-	}
-
-	// Handle attrs placeholder - only replace if not empty
-	if attrsStr != "" {
-		logLine = strings.ReplaceAll(logLine, PlaceholderAttrs, attrsStr)
-	} else {
-		// Remove the placeholder and any adjacent spaces
-		logLine = h.removeEmptyPlaceholder(logLine, PlaceholderAttrs)
-	}
-
-	builder.WriteString(logLine)
+	// Use parsed template for efficient formatting
+	h.renderTemplate(builder, cfg.parsedTemplate, timeStr, levelStr, msgStr, fileStr, attrsStr)
 	builder.WriteString("\n")
+}
+
+// renderTemplate efficiently renders the parsed template by iterating through tokens
+func (h *customHandler) renderTemplate(builder *strings.Builder, template *ParsedTemplate, timeStr, levelStr, msgStr, fileStr, attrsStr string) {
+	tokens := template.tokens
+	for i, token := range tokens {
+		switch token.Type {
+		case TokenTypeText:
+			// Handle text tokens, but be smart about spaces around empty placeholders
+			text := token.Text
+
+			// If this is a space before an empty placeholder, and we're followed by another space, skip one space
+			if text == " " && i+2 < len(tokens) {
+				nextToken := tokens[i+1]
+				nextNextToken := tokens[i+2]
+
+				// Check if next token is empty and followed by space
+				isEmpty := false
+				switch nextToken.Type {
+				case TokenTypeTime:
+					isEmpty = timeStr == ""
+				case TokenTypeLevel:
+					isEmpty = levelStr == ""
+				case TokenTypeMessage:
+					isEmpty = msgStr == ""
+				case TokenTypeFile:
+					isEmpty = fileStr == ""
+				case TokenTypeAttrs:
+					isEmpty = attrsStr == ""
+				}
+
+				// If next placeholder is empty and followed by space, skip this space
+				if isEmpty && nextNextToken.Type == TokenTypeText && strings.HasPrefix(nextNextToken.Text, " ") {
+					continue
+				}
+			}
+
+			builder.WriteString(text)
+		case TokenTypeTime:
+			if timeStr != "" {
+				builder.WriteString(timeStr)
+			}
+		case TokenTypeLevel:
+			if levelStr != "" {
+				builder.WriteString(levelStr)
+			}
+		case TokenTypeMessage:
+			if msgStr != "" {
+				builder.WriteString(msgStr)
+			}
+		case TokenTypeFile:
+			if fileStr != "" {
+				builder.WriteString(fileStr)
+			}
+		case TokenTypeAttrs:
+			if attrsStr != "" {
+				builder.WriteString(attrsStr)
+			}
+		}
+	}
 }
 
 func (h *customHandler) colorize(s, color string, cfg *handlerConfig) string {
@@ -405,34 +531,6 @@ func (h *customHandler) appendColorizedAttr(builder *strings.Builder, a slog.Att
 	} else {
 		builder.WriteString(h.colorize(key, ansiFaint, cfg))
 		builder.WriteString(h.colorize("=", ansiFaint, cfg))
-		builder.WriteString(fmt.Sprintf("%v", a.Value.Any()))
+		fmt.Fprintf(builder, "%v", a.Value.Any())
 	}
-}
-
-// removeEmptyPlaceholder removes a placeholder and adjacent spaces when the placeholder is empty
-func (h *customHandler) removeEmptyPlaceholder(s, placeholder string) string {
-	// Pattern: try to remove " {placeholder} " -> " "
-	// Pattern: try to remove " {placeholder}" -> ""
-	// Pattern: try to remove "{placeholder} " -> ""
-
-	// Try different patterns of space-placeholder-space combinations
-	patterns := []struct {
-		search  string
-		replace string
-	}{
-		{" " + placeholder + " ", " "}, // space-placeholder-space -> space
-		{" " + placeholder, ""},        // space-placeholder -> nothing
-		{placeholder + " ", ""},        // placeholder-space -> nothing
-		{placeholder, ""},              // just placeholder -> nothing
-	}
-
-	result := s
-	for _, pattern := range patterns {
-		if strings.Contains(result, pattern.search) {
-			result = strings.ReplaceAll(result, pattern.search, pattern.replace)
-			break // Only apply the first matching pattern
-		}
-	}
-
-	return result
 }
