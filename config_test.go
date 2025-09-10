@@ -356,3 +356,100 @@ func TestConfigValidationBehavior(t *testing.T) {
 		}
 	})
 }
+
+// TestWithTimeZone tests the WithTimeZone option
+func TestWithTimeZone(t *testing.T) {
+	t.Run("Set custom timezone", func(t *testing.T) {
+		// Create a custom timezone (UTC+8)
+		customTZ := time.FixedZone("Custom", 8*3600)
+
+		cfg := DefaultConfig()
+		WithTimeZone(customTZ)(cfg)
+
+		if cfg.TimeZone != customTZ {
+			t.Errorf("Expected TimeZone to be %v, got %v", customTZ, cfg.TimeZone)
+		}
+	})
+
+	t.Run("Set nil timezone", func(t *testing.T) {
+		cfg := DefaultConfig()
+		WithTimeZone(nil)(cfg)
+
+		if cfg.TimeZone != nil {
+			t.Errorf("Expected TimeZone to be nil, got %v", cfg.TimeZone)
+		}
+	})
+
+	t.Run("Set UTC timezone", func(t *testing.T) {
+		cfg := DefaultConfig()
+		WithTimeZone(time.UTC)(cfg)
+
+		if cfg.TimeZone != time.UTC {
+			t.Errorf("Expected TimeZone to be UTC, got %v", cfg.TimeZone)
+		}
+	})
+}
+
+// TestWithReplaceAttr tests the WithReplaceAttr option
+func TestWithReplaceAttr(t *testing.T) {
+	t.Run("Set custom replace function", func(t *testing.T) {
+		replaceFunc := func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == "password" {
+				return slog.String("password", "***")
+			}
+			return a
+		}
+
+		cfg := DefaultConfig()
+		WithReplaceAttr(replaceFunc)(cfg)
+
+		if cfg.ReplaceAttr == nil {
+			t.Error("Expected ReplaceAttr to be set, got nil")
+		}
+
+		// Test the function works
+		result := cfg.ReplaceAttr(nil, slog.String("password", "secret123"))
+		if result.Value.String() != "***" {
+			t.Errorf("Expected replaced password to be '***', got %s", result.Value.String())
+		}
+
+		// Test with non-password attribute
+		result = cfg.ReplaceAttr(nil, slog.String("username", "john"))
+		if result.Value.String() != "john" {
+			t.Errorf("Expected username to remain unchanged, got %s", result.Value.String())
+		}
+	})
+
+	t.Run("Set nil replace function", func(t *testing.T) {
+		cfg := DefaultConfig()
+		WithReplaceAttr(nil)(cfg)
+
+		if cfg.ReplaceAttr != nil {
+			t.Error("Expected ReplaceAttr to be nil")
+		}
+	})
+
+	t.Run("Replace function with groups", func(t *testing.T) {
+		replaceFunc := func(groups []string, a slog.Attr) slog.Attr {
+			if len(groups) > 0 && groups[0] == "sensitive" && a.Key == "data" {
+				return slog.String("data", "[REDACTED]")
+			}
+			return a
+		}
+
+		cfg := DefaultConfig()
+		WithReplaceAttr(replaceFunc)(cfg)
+
+		// Test with groups
+		result := cfg.ReplaceAttr([]string{"sensitive"}, slog.String("data", "secret"))
+		if result.Value.String() != "[REDACTED]" {
+			t.Errorf("Expected sensitive data to be redacted, got %s", result.Value.String())
+		}
+
+		// Test without groups
+		result = cfg.ReplaceAttr([]string{}, slog.String("data", "public"))
+		if result.Value.String() != "public" {
+			t.Errorf("Expected public data to remain unchanged, got %s", result.Value.String())
+		}
+	})
+}

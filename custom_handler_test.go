@@ -224,7 +224,7 @@ func TestCustomHandler_ReplaceAttr(t *testing.T) {
 
 	// Create a config with ReplaceAttr function
 	cfg := DefaultConfig()
-	cfg.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+	cfg.ReplaceAttr = func(_ []string, a slog.Attr) slog.Attr {
 		// Replace sensitive data
 		if a.Key == "password" {
 			return slog.String("password", "***")
@@ -298,7 +298,7 @@ func TestCustomHandler_ReplaceAttr_BuiltIns(t *testing.T) {
 	cfg.Console.Color = false
 	cfg.Console.Formatter = "{time} {level} {file} {message} {attrs}"
 	cfg.AddSource = true
-	cfg.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+	cfg.ReplaceAttr = func(_ []string, a slog.Attr) slog.Attr {
 		processedAttrs[a.Key] = true
 		// This should be called for ALL attributes including built-ins
 		switch a.Key {
@@ -390,7 +390,7 @@ func TestCustomHandler_ReplaceAttr_RemoveBuiltIns(t *testing.T) {
 	cfg.Console.Color = false
 	cfg.Console.Formatter = "{time} {level} {file} {message} {attrs}"
 	cfg.AddSource = true
-	cfg.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+	cfg.ReplaceAttr = func(_ []string, a slog.Attr) slog.Attr {
 		// Remove time and source attributes
 		switch a.Key {
 		case slog.TimeKey, slog.SourceKey:
@@ -453,7 +453,7 @@ func TestCustomHandler_ReplaceAttr_RemoveBuiltIns(t *testing.T) {
 // Test to verify our behavior matches standard slog handlers
 func TestCustomHandler_StandardSlogCompatibility(t *testing.T) {
 	// Test that our ReplaceAttr behavior matches standard slog.TextHandler
-	replaceAttr := func(groups []string, a slog.Attr) slog.Attr {
+	replaceAttr := func(_ []string, a slog.Attr) slog.Attr {
 		switch a.Key {
 		case slog.TimeKey:
 			return slog.String(slog.TimeKey, "CUSTOM_TIME")
@@ -548,7 +548,7 @@ func TestCustomHandler_CompareWithStandardSlog(t *testing.T) {
 	// Track which attributes are processed by ReplaceAttr
 	processedAttrs := make(map[string]bool)
 
-	replaceAttr := func(groups []string, a slog.Attr) slog.Attr {
+	replaceAttr := func(_ []string, a slog.Attr) slog.Attr {
 		processedAttrs[a.Key] = true
 		switch a.Key {
 		case slog.TimeKey:
@@ -868,6 +868,365 @@ func TestEmptyPlaceholderHandling(t *testing.T) {
 		expected := "INFO test message"
 		if !strings.Contains(output, expected) {
 			t.Errorf("Expected output to contain %q, got %q", expected, output)
+		}
+	})
+}
+
+// TestCustomHandler_TemplatePlaceholderEdgeCases tests various edge cases with template placeholders
+// This covers the audit requirement: "missing placeholders / duplicate placeholders / adjacent placeholders (e.g., "{time}{level}{message}") output correctness"
+func TestCustomHandler_TemplatePlaceholderEdgeCases(t *testing.T) {
+
+	t.Run("MissingPlaceholders", func(t *testing.T) {
+		var buf bytes.Buffer
+
+		cfg := DefaultConfig()
+		outputCfg := &mockOutputConfig{
+			format:    FormatCustom,
+			color:     false,
+			formatter: "Static text with no placeholders at all", // No placeholders
+		}
+
+		opts := &slog.HandlerOptions{
+			Level:     slog.LevelInfo,
+			AddSource: false,
+		}
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		record := slog.Record{
+			Time:    time.Now(),
+			Level:   slog.LevelInfo,
+			Message: "test message",
+		}
+		record.AddAttrs(slog.String("key", "value"))
+
+		err = handler.Handle(context.Background(), record)
+		if err != nil {
+			t.Fatalf("Handler.Handle failed: %v", err)
+		}
+
+		output := buf.String()
+		expected := "Static text with no placeholders at all"
+		if !strings.Contains(output, expected) {
+			t.Errorf("Expected output to contain %q, got %q", expected, output)
+		}
+	})
+
+	t.Run("DuplicatePlaceholders", func(t *testing.T) {
+		var buf bytes.Buffer
+
+		cfg := DefaultConfig()
+		outputCfg := &mockOutputConfig{
+			format:    FormatCustom,
+			color:     false,
+			formatter: "{level} {message} {level} {message}", // Duplicate placeholders
+		}
+
+		opts := &slog.HandlerOptions{
+			Level:     slog.LevelInfo,
+			AddSource: false,
+		}
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		record := slog.Record{
+			Time:    time.Now(),
+			Level:   slog.LevelInfo,
+			Message: "test message",
+		}
+
+		err = handler.Handle(context.Background(), record)
+		if err != nil {
+			t.Fatalf("Handler.Handle failed: %v", err)
+		}
+
+		output := buf.String()
+		t.Logf("Output with duplicates: %q", output)
+
+		// Should contain level and message twice
+		levelCount := strings.Count(output, "INFO")
+		messageCount := strings.Count(output, "test message")
+
+		if levelCount != 2 {
+			t.Errorf("Expected 'INFO' to appear 2 times, got %d", levelCount)
+		}
+		if messageCount != 2 {
+			t.Errorf("Expected 'test message' to appear 2 times, got %d", messageCount)
+		}
+	})
+
+	t.Run("AdjacentPlaceholders", func(t *testing.T) {
+		var buf bytes.Buffer
+
+		cfg := DefaultConfig()
+		outputCfg := &mockOutputConfig{
+			format:    FormatCustom,
+			color:     false,
+			formatter: "{time}{level}{message}", // Adjacent placeholders with no separators
+		}
+
+		opts := &slog.HandlerOptions{
+			Level:     slog.LevelInfo,
+			AddSource: false,
+		}
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		record := slog.Record{
+			Time:    time.Now(),
+			Level:   slog.LevelInfo,
+			Message: "test message",
+		}
+
+		err = handler.Handle(context.Background(), record)
+		if err != nil {
+			t.Fatalf("Handler.Handle failed: %v", err)
+		}
+
+		output := buf.String()
+		t.Logf("Output with adjacent placeholders: %q", output)
+
+		// Should contain all components, though concatenated
+		if !strings.Contains(output, "INFO") {
+			t.Error("Output should contain level 'INFO'")
+		}
+		if !strings.Contains(output, "test message") {
+			t.Error("Output should contain message 'test message'")
+		}
+		// Should have timestamp (check for common timestamp patterns)
+		hasTimestamp := strings.Contains(output, "2023") || strings.Contains(output, "2024") || strings.Contains(output, "2025")
+		if !hasTimestamp {
+			t.Error("Output should contain timestamp")
+		}
+	})
+
+	t.Run("NestedAndComplexPlaceholders", func(t *testing.T) {
+		var buf bytes.Buffer
+
+		cfg := DefaultConfig()
+		outputCfg := &mockOutputConfig{
+			format: FormatCustom,
+			color:  false,
+			// Mix of adjacent, separated, and duplicate placeholders
+			formatter: "{time}|{level}{level}|{message} - {attrs} - {time}",
+		}
+
+		opts := &slog.HandlerOptions{
+			Level:     slog.LevelInfo,
+			AddSource: false,
+		}
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		record := slog.Record{
+			Time:    time.Now(),
+			Level:   slog.LevelWarn,
+			Message: "warning message",
+		}
+		record.AddAttrs(slog.String("key1", "value1"), slog.Int("key2", 42))
+
+		err = handler.Handle(context.Background(), record)
+		if err != nil {
+			t.Fatalf("Handler.Handle failed: %v", err)
+		}
+
+		output := buf.String()
+		t.Logf("Output with complex placeholders: %q", output)
+
+		// Should contain all expected components
+		if !strings.Contains(output, "WARN") {
+			t.Error("Output should contain level 'WARN'")
+		}
+		if !strings.Contains(output, "warning message") {
+			t.Error("Output should contain message")
+		}
+		if !strings.Contains(output, "key1=value1") {
+			t.Error("Output should contain attributes")
+		}
+		if !strings.Contains(output, "key2=42") {
+			t.Error("Output should contain integer attribute")
+		}
+
+		// Check for duplicate level (WARNWARN pattern)
+		if !strings.Contains(output, "WARNWARN") {
+			t.Error("Output should contain adjacent duplicate levels 'WARNWARN'")
+		}
+
+		// Should have proper separators
+		if !strings.Contains(output, "|") {
+			t.Error("Output should contain separator characters")
+		}
+		if !strings.Contains(output, " - ") {
+			t.Error("Output should contain separator ' - '")
+		}
+	})
+
+	t.Run("InvalidPlaceholders", func(t *testing.T) {
+		var buf bytes.Buffer
+
+		cfg := DefaultConfig()
+		outputCfg := &mockOutputConfig{
+			format: FormatCustom,
+			color:  false,
+			// Mix of valid and invalid placeholders
+			formatter: "{level} {invalid} {message} {unknown} {attrs}",
+		}
+
+		opts := &slog.HandlerOptions{
+			Level:     slog.LevelInfo,
+			AddSource: false,
+		}
+
+		handler, err := newCustomHandler(&buf, cfg, outputCfg, opts)
+		if err != nil {
+			t.Fatalf("Failed to create handler: %v", err)
+		}
+
+		record := slog.Record{
+			Time:    time.Now(),
+			Level:   slog.LevelInfo,
+			Message: "test message",
+		}
+		record.AddAttrs(slog.String("key", "value"))
+
+		err = handler.Handle(context.Background(), record)
+		if err != nil {
+			t.Fatalf("Handler.Handle failed: %v", err)
+		}
+
+		output := buf.String()
+		t.Logf("Output with invalid placeholders: %q", output)
+
+		// Valid placeholders should work
+		if !strings.Contains(output, "INFO") {
+			t.Error("Valid placeholder {level} should work")
+		}
+		if !strings.Contains(output, "test message") {
+			t.Error("Valid placeholder {message} should work")
+		}
+		if !strings.Contains(output, "key=value") {
+			t.Error("Valid placeholder {attrs} should work")
+		}
+
+		// Invalid placeholders should be left as-is or removed
+		// (behavior depends on implementation)
+		invalidPlaceholders := []string{"{invalid}", "{unknown}"}
+		for _, placeholder := range invalidPlaceholders {
+			if strings.Contains(output, placeholder) {
+				t.Logf("Invalid placeholder %s was left in output (may be acceptable)", placeholder)
+			}
+		}
+	})
+}
+
+// TestOutputConfigInterfaces tests the outputConfig interface implementations
+func TestOutputConfigInterfaces(t *testing.T) {
+	t.Run("ConsoleConfig interface", func(t *testing.T) {
+		consoleConfig := &ConsoleConfig{
+			Enabled:   true,
+			Color:     true,
+			Format:    FormatJSON,
+			Formatter: "{time} {level} {message}",
+		}
+
+		// Test GetFormat
+		if consoleConfig.GetFormat() != FormatJSON {
+			t.Errorf("Expected GetFormat() to return %s, got %s", FormatJSON, consoleConfig.GetFormat())
+		}
+
+		// Test GetColor
+		if !consoleConfig.GetColor() {
+			t.Error("Expected GetColor() to return true")
+		}
+
+		// Test GetFormatter
+		expectedFormatter := "{time} {level} {message}"
+		if consoleConfig.GetFormatter() != expectedFormatter {
+			t.Errorf("Expected GetFormatter() to return %s, got %s", expectedFormatter, consoleConfig.GetFormatter())
+		}
+	})
+
+	t.Run("FileConfig interface", func(t *testing.T) {
+		fileConfig := &FileConfig{
+			Enabled:       true,
+			Path:          "/var/log/app.log",
+			Format:        FormatText,
+			Formatter:     "{timestamp} [{level}] {message} {attrs}",
+			MaxSizeMB:     100,
+			RetentionDays: 30,
+		}
+
+		// Test GetFormat
+		if fileConfig.GetFormat() != FormatText {
+			t.Errorf("Expected GetFormat() to return %s, got %s", FormatText, fileConfig.GetFormat())
+		}
+
+		// Test GetColor - file output should always return false
+		if fileConfig.GetColor() {
+			t.Error("Expected FileConfig GetColor() to always return false")
+		}
+
+		// Test GetFormatter
+		expectedFormatter := "{timestamp} [{level}] {message} {attrs}"
+		if fileConfig.GetFormatter() != expectedFormatter {
+			t.Errorf("Expected GetFormatter() to return %s, got %s", expectedFormatter, fileConfig.GetFormatter())
+		}
+	})
+
+	t.Run("Different output formats", func(t *testing.T) {
+		formats := []OutputFormat{FormatJSON, FormatText, FormatCustom}
+
+		for _, format := range formats {
+			consoleConfig := &ConsoleConfig{Format: format}
+			fileConfig := &FileConfig{Format: format}
+
+			if consoleConfig.GetFormat() != format {
+				t.Errorf("ConsoleConfig GetFormat() failed for %s", format)
+			}
+
+			if fileConfig.GetFormat() != format {
+				t.Errorf("FileConfig GetFormat() failed for %s", format)
+			}
+		}
+	})
+
+	t.Run("Console color variations", func(t *testing.T) {
+		// Test with color enabled
+		consoleWithColor := &ConsoleConfig{Color: true}
+		if !consoleWithColor.GetColor() {
+			t.Error("Expected GetColor() to return true when color is enabled")
+		}
+
+		// Test with color disabled
+		consoleNoColor := &ConsoleConfig{Color: false}
+		if consoleNoColor.GetColor() {
+			t.Error("Expected GetColor() to return false when color is disabled")
+		}
+	})
+
+	t.Run("Empty and default formatters", func(t *testing.T) {
+		// Test empty formatter
+		emptyConsole := &ConsoleConfig{Formatter: ""}
+		if emptyConsole.GetFormatter() != "" {
+			t.Errorf("Expected empty formatter to return empty string, got %s", emptyConsole.GetFormatter())
+		}
+
+		// Test default formatter
+		defaultConsole := &ConsoleConfig{Formatter: DefaultFormatter}
+		if defaultConsole.GetFormatter() != DefaultFormatter {
+			t.Errorf("Expected default formatter to be returned correctly")
 		}
 	})
 }
